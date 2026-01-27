@@ -79,6 +79,14 @@
                         "map": [
                           {
                             "key": {
+                              "symbol": "bank_id"
+                            },
+                            "val": {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "blood_type"
                             },
                             "val": {
@@ -127,6 +135,14 @@
                             },
                             "val": {
                               "u32": 100
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "registration_timestamp"
+                            },
+                            "val": {
+                              "u64": 0
                             }
                           }
                         ]

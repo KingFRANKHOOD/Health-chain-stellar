@@ -1,5 +1,20 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, vec, Env, Map, Symbol, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, Env, Map,
+    Symbol, Vec,
+};
+
+/// Error types for blood registration
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    Unauthorized = 1,
+    InvalidQuantity = 2,
+    InvalidExpiration = 3,
+    DuplicateRegistration = 4,
+    StorageError = 5,
+}
 
 /// Blood type enumeration
 #[contracttype]
@@ -25,20 +40,160 @@ pub struct BloodUnit {
     pub expiration_date: u64, // Unix timestamp
     pub donor_id: Symbol,
     pub location: Symbol,
+    pub bank_id: Address,
+    pub registration_timestamp: u64,
+}
+
+/// Event data for blood registration
+#[contracttype]
+#[derive(Clone)]
+pub struct BloodRegisteredEvent {
+    pub unit_id: u64,
+    pub bank_id: Address,
+    pub blood_type: BloodType,
+    pub quantity_ml: u32,
+    pub expiration_timestamp: u64,
+    pub donor_id: Option<Symbol>,
+    pub registration_timestamp: u64,
 }
 
 /// Storage keys
 const BLOOD_UNITS: Symbol = symbol_short!("UNITS");
 const NEXT_ID: Symbol = symbol_short!("NEXT_ID");
+const BLOOD_BANKS: Symbol = symbol_short!("BANKS");
+const ADMIN: Symbol = symbol_short!("ADMIN");
+
+// Validation constants
+const MIN_QUANTITY_ML: u32 = 50; // Minimum 50ml
+const MAX_QUANTITY_ML: u32 = 500; // Maximum 500ml per unit
+const MIN_SHELF_LIFE_DAYS: u64 = 1; // At least 1 day shelf life
+const MAX_SHELF_LIFE_DAYS: u64 = 42; // Maximum 42 days for whole blood
 
 #[contract]
 pub struct HealthChainContract;
 
 #[contractimpl]
 impl HealthChainContract {
-    /// Initialize the contract
-    pub fn initialize(_env: Env) -> Symbol {
+    /// Initialize the contract with admin
+    pub fn initialize(env: Env, admin: Address) -> Symbol {
+        admin.require_auth();
+        env.storage().instance().set(&ADMIN, &admin);
         symbol_short!("init")
+    }
+
+    /// Register a blood bank (admin only)
+    pub fn register_blood_bank(env: Env, bank_id: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN)
+            .ok_or(Error::Unauthorized)?;
+        admin.require_auth();
+
+        let mut banks: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&BLOOD_BANKS)
+            .unwrap_or(Map::new(&env));
+
+        banks.set(bank_id.clone(), true);
+        env.storage().persistent().set(&BLOOD_BANKS, &banks);
+
+        Ok(())
+    }
+
+    /// Register blood donation into inventory
+    pub fn register_blood(
+        env: Env,
+        bank_id: Address,
+        blood_type: BloodType,
+        quantity_ml: u32,
+        expiration_timestamp: u64,
+        donor_id: Option<Symbol>,
+    ) -> Result<u64, Error> {
+        // Authenticate blood bank
+        bank_id.require_auth();
+
+        // Verify blood bank is authorized
+        let banks: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&BLOOD_BANKS)
+            .unwrap_or(Map::new(&env));
+
+        if !banks.get(bank_id.clone()).unwrap_or(false) {
+            return Err(Error::Unauthorized);
+        }
+
+        // Validate quantity
+        if !(MIN_QUANTITY_ML..=MAX_QUANTITY_ML).contains(&quantity_ml) {
+            return Err(Error::InvalidQuantity);
+        }
+
+        // Validate expiration date
+        let current_time = env.ledger().timestamp();
+        let min_expiration = current_time + (MIN_SHELF_LIFE_DAYS * 86400);
+        let max_expiration = current_time + (MAX_SHELF_LIFE_DAYS * 86400);
+
+        if expiration_timestamp <= current_time || expiration_timestamp < min_expiration {
+            return Err(Error::InvalidExpiration);
+        }
+
+        if expiration_timestamp > max_expiration {
+            return Err(Error::InvalidExpiration);
+        }
+
+        // Generate unique ID
+        let unit_id = Self::get_next_id(&env);
+
+        // Create blood unit
+        let blood_unit = BloodUnit {
+            id: unit_id,
+            blood_type,
+            quantity: quantity_ml,
+            expiration_date: expiration_timestamp,
+            donor_id: donor_id.clone().unwrap_or(symbol_short!("ANON")),
+            location: symbol_short!("BANK"),
+            bank_id: bank_id.clone(),
+            registration_timestamp: current_time,
+        };
+
+        // Store blood unit
+        let mut units: Map<u64, BloodUnit> = env
+            .storage()
+            .persistent()
+            .get(&BLOOD_UNITS)
+            .unwrap_or(Map::new(&env));
+
+        units.set(unit_id, blood_unit);
+        env.storage().persistent().set(&BLOOD_UNITS, &units);
+
+        // Emit event
+        let event = BloodRegisteredEvent {
+            unit_id,
+            bank_id,
+            blood_type,
+            quantity_ml,
+            expiration_timestamp,
+            donor_id,
+            registration_timestamp: current_time,
+        };
+
+        env.events()
+            .publish((symbol_short!("blood"), symbol_short!("register")), event);
+
+        Ok(unit_id)
+    }
+
+    /// Check if an address is an authorized blood bank
+    pub fn is_blood_bank(env: Env, bank_id: Address) -> bool {
+        let banks: Map<Address, bool> = env
+            .storage()
+            .persistent()
+            .get(&BLOOD_BANKS)
+            .unwrap_or(Map::new(&env));
+
+        banks.get(bank_id).unwrap_or(false)
     }
 
     /// Store a health record hash
@@ -56,7 +211,7 @@ impl HealthChainContract {
         true
     }
 
-    /// Add a blood unit to inventory
+    /// Add a blood unit to inventory (legacy function for testing)
     pub fn add_blood_unit(
         env: Env,
         blood_type: BloodType,
@@ -66,6 +221,10 @@ impl HealthChainContract {
         location: Symbol,
     ) -> u64 {
         let id = Self::get_next_id(&env);
+        let current_time = env.ledger().timestamp();
+
+        // Create a default address for legacy function using contract address
+        let default_bank = env.current_contract_address();
 
         let unit = BloodUnit {
             id,
@@ -74,6 +233,8 @@ impl HealthChainContract {
             expiration_date,
             donor_id,
             location,
+            bank_id: default_bank,
+            registration_timestamp: current_time,
         };
 
         let mut units: Map<u64, BloodUnit> = env
@@ -182,16 +343,394 @@ impl HealthChainContract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{symbol_short, Env};
+    use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
+
+    fn setup_contract_with_admin(env: &Env) -> (Address, Address, HealthChainContractClient) {
+        let admin = Address::generate(env);
+        let contract_id = env.register(HealthChainContract, ());
+        let client = HealthChainContractClient::new(env, &contract_id);
+
+        env.mock_all_auths();
+        client.initialize(&admin);
+
+        (contract_id, admin, client)
+    }
 
     #[test]
     fn test_initialize() {
         let env = Env::default();
+        let admin = Address::generate(&env);
         let contract_id = env.register(HealthChainContract, ());
         let client = HealthChainContractClient::new(&env, &contract_id);
 
-        let result = client.initialize();
+        env.mock_all_auths();
+        let result = client.initialize(&admin);
         assert_eq!(result, symbol_short!("init"));
+    }
+
+    #[test]
+    fn test_register_blood_bank() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let bank = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.register_blood_bank(&bank);
+
+        // Verify bank is registered
+        assert_eq!(client.is_blood_bank(&bank), true);
+    }
+
+    #[test]
+    fn test_register_blood_success() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let bank = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.register_blood_bank(&bank);
+
+        let current_time = env.ledger().timestamp();
+        let expiration = current_time + (7 * 86400); // 7 days from now
+
+        let result = client.register_blood(
+            &bank,
+            &BloodType::OPositive,
+            &450,
+            &expiration,
+            &Some(symbol_short!("donor1")),
+        );
+
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #1)")]
+    fn test_register_blood_unauthorized_bank() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let unauthorized_bank = Address::generate(&env);
+
+        env.mock_all_auths();
+
+        let current_time = env.ledger().timestamp();
+        let expiration = current_time + (7 * 86400);
+
+        client.register_blood(
+            &unauthorized_bank,
+            &BloodType::OPositive,
+            &450,
+            &expiration,
+            &Some(symbol_short!("donor1")),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_register_blood_invalid_quantity_too_low() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let bank = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.register_blood_bank(&bank);
+
+        let current_time = env.ledger().timestamp();
+        let expiration = current_time + (7 * 86400);
+
+        client.register_blood(
+            &bank,
+            &BloodType::OPositive,
+            &25, // Below minimum
+            &expiration,
+            &Some(symbol_short!("donor1")),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn test_register_blood_invalid_quantity_too_high() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let bank = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.register_blood_bank(&bank);
+
+        let current_time = env.ledger().timestamp();
+        let expiration = current_time + (7 * 86400);
+
+        client.register_blood(
+            &bank,
+            &BloodType::OPositive,
+            &600, // Above maximum
+            &expiration,
+            &Some(symbol_short!("donor1")),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #3)")]
+    fn test_register_blood_expired_date() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let bank = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.register_blood_bank(&bank);
+
+        let current_time = env.ledger().timestamp();
+        let expiration = 0; // Already expired
+
+        client.register_blood(
+            &bank,
+            &BloodType::OPositive,
+            &450,
+            &expiration,
+            &Some(symbol_short!("donor1")),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #3)")]
+    fn test_register_blood_expiration_too_far() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let bank = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.register_blood_bank(&bank);
+
+        let current_time = env.ledger().timestamp();
+        let expiration = current_time + (50 * 86400); // 50 days (exceeds 42 day limit)
+
+        client.register_blood(
+            &bank,
+            &BloodType::OPositive,
+            &450,
+            &expiration,
+            &Some(symbol_short!("donor1")),
+        );
+    }
+
+    #[test]
+    fn test_register_blood_without_donor_id() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let bank = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.register_blood_bank(&bank);
+
+        let current_time = env.ledger().timestamp();
+        let expiration = current_time + (7 * 86400);
+
+        let result = client.register_blood(
+            &bank,
+            &BloodType::ABNegative,
+            &350,
+            &expiration,
+            &None, // Anonymous donor
+        );
+
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_register_multiple_blood_units() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let bank = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.register_blood_bank(&bank);
+
+        let current_time = env.ledger().timestamp();
+        let expiration = current_time + (7 * 86400);
+
+        // Register first unit
+        let id1 = client.register_blood(
+            &bank,
+            &BloodType::OPositive,
+            &450,
+            &expiration,
+            &Some(symbol_short!("donor1")),
+        );
+
+        // Register second unit
+        let id2 = client.register_blood(
+            &bank,
+            &BloodType::APositive,
+            &400,
+            &expiration,
+            &Some(symbol_short!("donor2")),
+        );
+
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+    }
+
+    #[test]
+    fn test_register_blood_all_blood_types() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let bank = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.register_blood_bank(&bank);
+
+        let current_time = env.ledger().timestamp();
+        let expiration = current_time + (7 * 86400);
+
+        let blood_types = vec![
+            &env,
+            BloodType::APositive,
+            BloodType::ANegative,
+            BloodType::BPositive,
+            BloodType::BNegative,
+            BloodType::ABPositive,
+            BloodType::ABNegative,
+            BloodType::OPositive,
+            BloodType::ONegative,
+        ];
+
+        for (i, blood_type) in blood_types.iter().enumerate() {
+            let result = client.register_blood(
+                &bank,
+                &blood_type,
+                &450,
+                &expiration,
+                &Some(symbol_short!("donor")),
+            );
+            assert_eq!(result, (i as u64) + 1);
+        }
+    }
+
+    #[test]
+    fn test_register_blood_minimum_valid_quantity() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let bank = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.register_blood_bank(&bank);
+
+        let current_time = env.ledger().timestamp();
+        let expiration = current_time + (7 * 86400);
+
+        let result = client.register_blood(
+            &bank,
+            &BloodType::OPositive,
+            &50, // Minimum valid quantity
+            &expiration,
+            &Some(symbol_short!("donor1")),
+        );
+
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_register_blood_maximum_valid_quantity() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let bank = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.register_blood_bank(&bank);
+
+        let current_time = env.ledger().timestamp();
+        let expiration = current_time + (7 * 86400);
+
+        let result = client.register_blood(
+            &bank,
+            &BloodType::OPositive,
+            &500, // Maximum valid quantity
+            &expiration,
+            &Some(symbol_short!("donor1")),
+        );
+
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_register_blood_minimum_shelf_life() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let bank = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.register_blood_bank(&bank);
+
+        let current_time = env.ledger().timestamp();
+        let expiration = current_time + (1 * 86400) + 1; // Just over 1 day
+
+        let result = client.register_blood(
+            &bank,
+            &BloodType::OPositive,
+            &450,
+            &expiration,
+            &Some(symbol_short!("donor1")),
+        );
+
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_register_blood_maximum_shelf_life() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let bank = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.register_blood_bank(&bank);
+
+        let current_time = env.ledger().timestamp();
+        let expiration = current_time + (42 * 86400); // Exactly 42 days
+
+        let result = client.register_blood(
+            &bank,
+            &BloodType::OPositive,
+            &450,
+            &expiration,
+            &Some(symbol_short!("donor1")),
+        );
+
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_multiple_blood_banks() {
+        let env = Env::default();
+        let (_, _, client) = setup_contract_with_admin(&env);
+        let bank1 = Address::generate(&env);
+        let bank2 = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.register_blood_bank(&bank1);
+        client.register_blood_bank(&bank2);
+
+        let current_time = env.ledger().timestamp();
+        let expiration = current_time + (7 * 86400);
+
+        // Both banks can register blood
+        let id1 = client.register_blood(
+            &bank1,
+            &BloodType::OPositive,
+            &450,
+            &expiration,
+            &Some(symbol_short!("donor1")),
+        );
+
+        let id2 = client.register_blood(
+            &bank2,
+            &BloodType::APositive,
+            &400,
+            &expiration,
+            &Some(symbol_short!("donor2")),
+        );
+
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
     }
 
     #[test]
