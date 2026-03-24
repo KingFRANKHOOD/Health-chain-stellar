@@ -13,7 +13,11 @@ describe('SorobanService', () => {
 
   beforeEach(async () => {
     mockTxQueue = {
-      add: jest.fn().mockResolvedValue({ id: 'job-123' }),
+      add: jest
+        .fn()
+        .mockImplementation((_data: SorobanTxJob, opts: { jobId?: string }) =>
+          Promise.resolve({ id: opts?.jobId ?? 'job-123' }),
+        ),
       count: jest.fn().mockResolvedValue(5),
       getFailedCount: jest.fn().mockResolvedValue(2),
       getJob: jest.fn(),
@@ -59,7 +63,7 @@ describe('SorobanService', () => {
 
       const jobId = await service.submitTransaction(job);
 
-      expect(jobId).toBe('job-123');
+      expect(jobId).toBe('idempotency-key-1');
       expect(mockTxQueue.add).toHaveBeenCalledWith(job, expect.any(Object));
     });
 
@@ -146,11 +150,32 @@ describe('SorobanService', () => {
       mockIdempotencyService.checkAndSetIdempotencyKey.mockResolvedValueOnce(false);
 
       const result1 = await service.submitTransaction(job);
-      expect(result1).toBe('job-123');
+      expect(result1).toBe(idempotencyKey);
 
       await expect(service.submitTransaction(job)).rejects.toThrow(
         'Duplicate submission',
       );
+    });
+  });
+
+  describe('submitTransactionAndWait', () => {
+    it('resolves with transaction hash when the worker completes', async () => {
+      const job: SorobanTxJob = {
+        contractMethod: 'register_verified_organization',
+        args: ['org-id', 'LIC', 'Name'],
+        idempotencyKey: 'wait-key-1',
+      };
+      mockTxQueue.getJob.mockResolvedValueOnce({
+        finished: jest.fn().mockResolvedValue({
+          success: true,
+          transactionHash: 'tx_completed',
+        }),
+      });
+
+      const result = await service.submitTransactionAndWait(job, 10_000);
+
+      expect(result.transactionHash).toBe('tx_completed');
+      expect(mockTxQueue.getJob).toHaveBeenCalledWith('wait-key-1');
     });
   });
 
@@ -336,7 +361,7 @@ describe('SorobanService', () => {
       // First submission succeeds
       mockIdempotencyService.checkAndSetIdempotencyKey.mockResolvedValueOnce(true);
       const jobId1 = await service.submitTransaction(job);
-      expect(jobId1).toBe('job-123');
+      expect(jobId1).toBe(idempotencyKey);
 
       // Duplicate submission fails
       mockIdempotencyService.checkAndSetIdempotencyKey.mockResolvedValueOnce(false);

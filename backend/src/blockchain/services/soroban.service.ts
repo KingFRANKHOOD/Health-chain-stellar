@@ -59,6 +59,44 @@ export class SorobanService {
   }
 
   /**
+   * Submit and block until the Soroban worker finishes (success or failure).
+   * Used for flows that must persist on-chain proof before completing a workflow.
+   */
+  async submitTransactionAndWait(
+    job: SorobanTxJob,
+    timeoutMs = 120_000,
+  ): Promise<{ transactionHash: string }> {
+    const jobId = await this.submitTransaction(job);
+    const bullJob = await this.txQueue.getJob(jobId);
+    if (!bullJob) {
+      throw new Error(`Queued Soroban job not found: ${jobId}`);
+    }
+
+    const completion = bullJob.finished() as Promise<{
+      success: boolean;
+      transactionHash: string;
+    }>;
+
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              `Soroban job ${jobId} timed out after ${timeoutMs}ms`,
+            ),
+          ),
+        timeoutMs,
+      ),
+    );
+
+    const result = await Promise.race([completion, timeout]);
+    if (!result?.success || !result.transactionHash) {
+      throw new Error('Soroban job completed without a transaction hash');
+    }
+    return { transactionHash: result.transactionHash };
+  }
+
+  /**
    * Get real-time queue metrics for admin monitoring.
    * 
    * @returns Queue depth, failed jobs count, and DLQ count

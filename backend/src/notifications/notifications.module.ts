@@ -46,6 +46,6 @@ import { OrderNotificationListener } from './listeners/order-notification.listen
     // Service
     NotificationsService,
   ],
-  exports: [NotificationsService],
+  exports: [NotificationsService, EmailProvider],
 })
 export class NotificationsModule {}
