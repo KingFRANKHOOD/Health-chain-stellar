@@ -1,6 +1,12 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+
+import {
+  ReservedUnitInvariantService,
+  UnitReservationCheck,
+} from '../common/invariants/reserved-unit.invariant';
+import { PaginatedResponse, PaginationQueryDto, PaginationUtil } from '../common/pagination';
 import { InventoryStockEntity } from './entities/inventory-stock.entity';
 
 @Injectable()
@@ -8,15 +14,23 @@ export class InventoryService {
   constructor(
     @InjectRepository(InventoryStockEntity)
     private readonly inventoryRepo: Repository<InventoryStockEntity>,
+    private readonly unitInvariant: ReservedUnitInvariantService,
   ) {}
 
-  async findAll(hospitalId?: string) {
+  async findAll(
+    hospitalId?: string,
+    paginationDto?: PaginationQueryDto,
+  ): Promise<PaginatedResponse<InventoryStockEntity>> {
+    const { page = 1, pageSize = 25 } = paginationDto || {};
     const where = hospitalId ? { bloodBankId: hospitalId } : {};
-    const data = await this.inventoryRepo.find({ where });
-    return {
-      message: 'Inventory items retrieved successfully',
-      data,
-    };
+
+    const [data, totalCount] = await this.inventoryRepo.findAndCount({
+      where,
+      skip: PaginationUtil.calculateSkip(page, pageSize),
+      take: pageSize,
+    });
+
+    return PaginationUtil.createResponse(data, page, pageSize, totalCount);
   }
 
   async findOne(id: string) {

@@ -5,24 +5,36 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { OptimisticLockVersionMismatchError, Repository } from 'typeorm';
 
-import { OrderStateMachine } from './state-machine/order-state-machine';
-import { OrderEventStoreService } from './services/order-event-store.service';
+import {
+  OrderConfirmedEvent,
+  OrderCancelledEvent,
+  OrderStatusUpdatedEvent,
+  OrderRiderAssignedEvent,
+  OrderDispatchedEvent,
+  OrderInTransitEvent,
+  OrderDeliveredEvent,
+  OrderDisputedEvent,
+  OrderResolvedEvent,
+} from '../events';
+import { InventoryService } from '../inventory/inventory.service';
+import { PaginatedResponse, PaginationUtil } from '../common/pagination';
+
+import { OrderQueryParamsDto } from './dto/order-query-params.dto';
+import { OrdersResponseDto } from './dto/orders-response.dto';
+import { UpdateRequestStatusDto } from './dto/update-request-status.dto';
 import { OrderEntity } from './entities/order.entity';
 import { OrderEventEntity } from './entities/order-event.entity';
 import { OrderEventType } from './enums/order-event-type.enum';
 import { OrderStatus } from './enums/order-status.enum';
-import { Order, BloodType } from './types/order.types';
-import { OrderQueryParamsDto } from './dto/order-query-params.dto';
-import { OrdersResponseDto } from './dto/orders-response.dto';
-import { OrderRiderAssignedEvent } from '../events';
-import { InventoryService } from '../inventory/inventory.service';
-import { UpdateRequestStatusDto } from './dto/update-request-status.dto';
-import { RequestStatusService } from './services/request-status.service';
 import { RequestStatusAction } from './enums/request-status-action.enum';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { OrderStateMachine } from './state-machine/order-state-machine';
+import { OrderEventStoreService } from './services/order-event-store.service';
+import { RequestStatusService } from './services/request-status.service';
+import { Order, BloodType } from './types/order.types';
 
 @Injectable()
 export class OrdersService {
@@ -50,7 +62,9 @@ export class OrdersService {
     return { message: 'Orders retrieved successfully', data: orders };
   }
 
-  async findAllWithFilters(params: OrderQueryParamsDto): Promise<OrdersResponseDto> {
+  async findAllWithFilters(
+    params: OrderQueryParamsDto,
+  ): Promise<PaginatedResponse<Order>> {
     const {
       hospitalId,
       startDate,
@@ -129,22 +143,15 @@ export class OrdersService {
 
     // Calculate pagination
     const totalCount = filteredOrders.length;
-    const totalPages = Math.ceil(totalCount / pageSize);
-    const startIndex = (page - 1) * pageSize;
-    const endIndex = startIndex + pageSize;
+    const skip = PaginationUtil.calculateSkip(page, pageSize);
+    const paginatedOrders = filteredOrders.slice(skip, skip + pageSize);
 
-    // Get paginated results
-    const paginatedOrders = filteredOrders.slice(startIndex, endIndex);
-
-    return {
-      data: paginatedOrders,
-      pagination: {
-        currentPage: page,
-        pageSize,
-        totalCount,
-        totalPages,
-      },
-    };
+    return PaginationUtil.createResponse(
+      paginatedOrders,
+      page,
+      pageSize,
+      totalCount,
+    );
   }
 
   private getSortValue(order: Order, sortBy: string): any {

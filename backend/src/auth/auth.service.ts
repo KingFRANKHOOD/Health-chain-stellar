@@ -25,6 +25,7 @@ import { ErrorCode } from '../common/errors/error-codes.enum';
 
 import { JwtPayload } from './jwt.strategy';
 import { hashPassword, verifyPassword } from './utils/password.util';
+import { AuthSessionRepository } from './repositories/auth-session.repository';
 
 const MAX_FAILED_LOGIN_ATTEMPTS = 5;
 const ACCOUNT_LOCK_MINUTES = 15;
@@ -42,6 +43,7 @@ export class AuthService {
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     @InjectRepository(UserEntity)
     private readonly userRepository: Repository<UserEntity>,
+    private readonly authSessionRepository: AuthSessionRepository,
   ) {
     this.circuitBreaker = new RedisCircuitBreaker();
     this.fallbackStore = new AuthSessionFallbackStore();
@@ -347,6 +349,15 @@ export class AuthService {
     );
     await this.redis.zrem(this.userSessionsKey(userId), sessionId);
 
+    // Persist revocation to database
+    try {
+      await this.authSessionRepository.revokeSession(sessionId, 'User logout');
+    } catch (error) {
+      this.logger.warn(
+        `Failed to persist session revocation to database: ${error.message}`,
+      );
+    }
+
     return { message: 'Session revoked successfully' };
   }
 
@@ -503,6 +514,24 @@ export class AuthService {
         await this.fallbackStore.addUserSession(user.id, sessionId);
       },
     );
+
+    // Persist to database for audit trail
+    try {
+      await this.authSessionRepository.create({
+        sessionId,
+        userId: user.id,
+        email: user.email,
+        role: user.role ?? 'donor',
+        expiresAt: new Date(expiresAt),
+        ipAddress: undefined, // Can be populated from request context
+        userAgent: undefined, // Can be populated from request context
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to persist session to database: ${error.message}`,
+      );
+      // Don't fail login if database persistence fails
+    }
   }
 
   private async touchSession(

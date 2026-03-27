@@ -11,12 +11,14 @@ import { UserEntity } from '../users/entities/user.entity';
 
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { AuthSessionEntity } from './entities/auth-session.entity';
 import { RolePermissionEntity } from './entities/role-permission.entity';
 import { RoleEntity } from './entities/role.entity';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { PermissionsGuard } from './guards/permissions.guard';
 import { JwtStrategy } from './jwt.strategy';
 import { PermissionsService } from './permissions.service';
+import { AuthSessionRepository } from './repositories/auth-session.repository';
 
 @Module({
   imports: [
@@ -34,7 +36,12 @@ import { PermissionsService } from './permissions.service';
         };
       },
     }),
-    TypeOrmModule.forFeature([RoleEntity, RolePermissionEntity, UserEntity]),
+    TypeOrmModule.forFeature([
+      RoleEntity,
+      RolePermissionEntity,
+      UserEntity,
+      AuthSessionEntity,
+    ]),
     RedisModule,
     IdempotencyModule,
     UserActivityModule,
@@ -46,6 +53,7 @@ import { PermissionsService } from './permissions.service';
     JwtAuthGuard,
     PermissionsGuard,
     PermissionsService,
+    AuthSessionRepository,
   ],
   exports: [
     AuthService,
@@ -54,6 +62,7 @@ import { PermissionsService } from './permissions.service';
     PermissionsGuard,
     PermissionsService,
     JwtModule,
+    AuthSessionRepository,
   ],
 })
 export class AuthModule {}
