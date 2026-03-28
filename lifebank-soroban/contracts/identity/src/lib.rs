@@ -141,6 +141,9 @@ pub enum DataKey {
     OrgTypeList(OrgType),
     OrgVerifier(Address),
     OrgUnverifyReason(Address),
+    // Verification
+    VerificationMetadata(Address),
+    VerificationEvents(Address),
     // Rating
     RatedFlag(u64, Address),
     RatingRecord(u64, Address),
@@ -988,3 +991,4 @@ impl AccessControlContract {
 }
 
 mod test;
+mod verification;

@@ -167,6 +167,42 @@ export class OrganizationEntity extends BaseEntity {
   })
   blockchainAddress?: string | null;
 
+  @Column({
+    name: 'verification_source',
+    type: 'varchar',
+    length: 50,
+    default: 'backend',
+  })
+  verificationSource!: string;
+
+  @Column({ name: 'synced_at', type: 'timestamp', nullable: true })
+  syncedAt?: Date | null;
+
+  @Column({
+    name: 'verification_tx_hash',
+    type: 'varchar',
+    length: 128,
+    nullable: true,
+  })
+  verificationTxHash?: string | null;
+
+  @Column({
+    name: 'sync_status',
+    type: 'varchar',
+    length: 50,
+    default: 'pending',
+  })
+  syncStatus!: string;
+
+  @Column({ name: 'sync_error_message', type: 'text', nullable: true })
+  syncErrorMessage?: string | null;
+
+  @Column({ name: 'sync_retry_count', type: 'int', default: 0 })
+  syncRetryCount!: number;
+
+  @Column({ name: 'soroban_verified_at', type: 'timestamp', nullable: true })
+  sorobanVerifiedAt?: Date | null;
+
   @Column({ type: 'decimal', precision: 3, scale: 2, default: 0 })
   rating!: number;
 

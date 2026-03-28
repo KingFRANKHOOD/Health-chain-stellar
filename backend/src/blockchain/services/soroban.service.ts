@@ -87,6 +87,19 @@ export class SorobanService {
   }
 
   /**
+   * Get organization verification status from Soroban
+   */
+  async getOrganizationVerificationStatus(
+    organizationId: string,
+  ): Promise<{ verified: boolean; verifiedAt?: number } | null> {
+    // This would call the Soroban contract's get_organization method
+    // For now, returning a stub that should be implemented with actual contract call
+    this.logger.debug(`Querying verification status for org: ${organizationId}`);
+    // TODO: Implement actual Soroban contract query
+    return null;
+  }
+
+  /**
    * Submit and block until the Soroban worker finishes (success or failure).
    * Used for flows that must persist on-chain proof before completing a workflow.
    */

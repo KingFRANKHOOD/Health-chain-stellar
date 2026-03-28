@@ -1,10 +1,10 @@
-import { Repository, SelectQueryBuilder } from 'typeorm';
+import { Repository, SelectQueryBuilder, SaveOptions } from 'typeorm';
 
-export class SoftDeleteRepository<Entity> extends Repository<Entity> {
+export class SoftDeleteRepository<Entity extends { deletedAt?: Date | null }> extends Repository<Entity> {
   /**
    * Find records excluding soft-deleted ones
    */
-  findActiveMany(options?: any) {
+  async findActiveMany(options?: any): Promise<Entity[]> {
     return this.find({
       ...options,
       where: {
@@ -17,7 +17,7 @@ export class SoftDeleteRepository<Entity> extends Repository<Entity> {
   /**
    * Find one record excluding soft-deleted ones
    */
-  findActiveOne(options?: any) {
+  async findActiveOne(options?: any): Promise<Entity | null> {
     return this.findOne({
       ...options,
       where: {

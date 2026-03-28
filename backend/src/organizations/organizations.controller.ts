@@ -30,12 +30,14 @@ import { ReportOrganizationReviewDto } from './dto/report-organization-review.dt
 import { SearchOrganizationsDto } from './dto/search-organizations.dto';
 import { OrganizationsService } from './organizations.service';
 import { OrganizationReviewsService } from './services/organization-reviews.service';
+import { VerificationSyncService } from './services/verification-sync.service';
 
 @Controller('organizations')
 export class OrganizationsController {
   constructor(
     private readonly organizationsService: OrganizationsService,
     private readonly organizationReviewsService: OrganizationReviewsService,
+    private readonly verificationSyncService: VerificationSyncService,
   ) {}
 
   @Public()
@@ -171,5 +173,60 @@ export class OrganizationsController {
       req.user.id,
       req.user.role,
     );
+  }
+
+  // =========================================================================
+  // Verification Sync Endpoints
+  // =========================================================================
+
+  @RequirePermissions(Permission.ADMIN_ACCESS)
+  @Post(':id/verify-on-chain')
+  verifyOnChain(
+    @Param('id', ParseUUIDPipe) organizationId: string,
+    @Req() req: { user: { id: string } },
+  ) {
+    return this.verificationSyncService.syncVerificationToBlockchain(organizationId);
+  }
+
+  @RequirePermissions(Permission.ADMIN_ACCESS)
+  @Post(':id/revoke-verification')
+  revokeVerification(
+    @Param('id', ParseUUIDPipe) organizationId: string,
+    @Body() dto: RevokeVerificationDto,
+  ) {
+    return this.verificationSyncService.revokeVerificationFromBlockchain(
+      organizationId,
+      dto.reason,
+    );
+  }
+
+  @RequirePermissions(Permission.ADMIN_ACCESS)
+  @Post(':id/retry-sync')
+  retrySyncVerification(
+    @Param('id', ParseUUIDPipe) organizationId: string,
+  ) {
+    return this.verificationSyncService.retrySyncVerification(organizationId);
+  }
+
+  @RequirePermissions(Permission.ADMIN_ACCESS)
+  @Get(':id/sync-status')
+  getSyncStatus(
+    @Param('id', ParseUUIDPipe) organizationId: string,
+  ) {
+    return this.verificationSyncService.getSyncStatus(organizationId);
+  }
+
+  @RequirePermissions(Permission.ADMIN_ACCESS)
+  @Get('verification/pending-syncs')
+  listPendingSyncs() {
+    return this.verificationSyncService.listPendingSyncs();
+  }
+
+  @RequirePermissions(Permission.ADMIN_ACCESS)
+  @Post(':id/check-mismatch')
+  checkSyncMismatch(
+    @Param('id', ParseUUIDPipe) organizationId: string,
+  ) {
+    return this.verificationSyncService.checkSyncMismatch(organizationId);
   }
 }

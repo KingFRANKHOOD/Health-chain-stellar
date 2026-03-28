@@ -659,4 +659,235 @@ export class SorobanService implements OnModuleInit {
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+
+  /**
+   * Verify an organization on-chain
+   */
+  async verifyOrganization(orgId: string): Promise<{ transactionHash: string }> {
+    return this.executeWithRetry(async () => {
+      const account = await this.server.getAccount(
+        this.sourceKeypair.publicKey(),
+      );
+
+      const transaction = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          this.contract.call(
+            'verify_organization',
+            this.createAddressScVal(this.sourceKeypair.publicKey()),
+            this.createAddressScVal(orgId),
+          ),
+        )
+        .setTimeout(30)
+        .build();
+
+      transaction.sign(this.sourceKeypair);
+
+      const response = await this.server.sendTransaction(transaction);
+
+      if (response.status === 'PENDING') {
+        await this.pollTransactionStatus(response.hash);
+
+        await this.saveEvent({
+          eventType: 'organization_verified',
+          transactionHash: response.hash,
+          data: { organizationId: orgId },
+        });
+
+        return { transactionHash: response.hash };
+      }
+
+      throw new Error(`Transaction failed: ${response.status}`);
+    });
+  }
+
+  /**
+   * Revoke organization verification on-chain
+   */
+  async revokeOrganizationVerification(
+    orgId: string,
+    reason: string,
+  ): Promise<{ transactionHash: string }> {
+    return this.executeWithRetry(async () => {
+      const account = await this.server.getAccount(
+        this.sourceKeypair.publicKey(),
+      );
+
+      const transaction = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          this.contract.call(
+            'unverify_organization',
+            this.createAddressScVal(this.sourceKeypair.publicKey()),
+            this.createAddressScVal(orgId),
+            xdr.ScVal.scvString(reason),
+          ),
+        )
+        .setTimeout(30)
+        .build();
+
+      transaction.sign(this.sourceKeypair);
+
+      const response = await this.server.sendTransaction(transaction);
+
+      if (response.status === 'PENDING') {
+        await this.pollTransactionStatus(response.hash);
+
+        await this.saveEvent({
+          eventType: 'organization_verification_revoked',
+          transactionHash: response.hash,
+          data: { organizationId: orgId, reason },
+        });
+
+        return { transactionHash: response.hash };
+      }
+
+      throw new Error(`Transaction failed: ${response.status}`);
+    });
+  }
+
+  /**
+   * Get organization verification metadata from on-chain
+   */
+  async getOrganizationVerificationStatus(orgId: string): Promise<{
+    verified: boolean;
+    verifiedAt?: number;
+    verifiedBy?: string;
+    revokedAt?: number;
+    revocationReason?: string;
+  } | null> {
+    return this.executeWithRetry(async () => {
+      const account = await this.server.getAccount(
+        this.sourceKeypair.publicKey(),
+      );
+
+      const transaction = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          this.contract.call(
+            'get_verification_metadata',
+            this.createAddressScVal(orgId),
+          ),
+        )
+        .setTimeout(30)
+        .build();
+
+      const simulated = await this.server.simulateTransaction(transaction);
+
+      if (SorobanRpc.Api.isSimulationSuccess(simulated)) {
+        const result = simulated.result?.retval;
+        return this.parseVerificationMetadata(result);
+      }
+
+      return null;
+    });
+  }
+
+  /**
+   * Check if organization is verified on-chain
+   */
+  async isOrganizationVerified(orgId: string): Promise<boolean> {
+    return this.executeWithRetry(async () => {
+      const account = await this.server.getAccount(
+        this.sourceKeypair.publicKey(),
+      );
+
+      const transaction = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          this.contract.call(
+            'is_organization_verified',
+            this.createAddressScVal(orgId),
+          ),
+        )
+        .setTimeout(30)
+        .build();
+
+      const simulated = await this.server.simulateTransaction(transaction);
+
+      if (SorobanRpc.Api.isSimulationSuccess(simulated)) {
+        const result = simulated.result?.retval;
+        return this.parseScVal(result);
+      }
+
+      return false;
+    });
+  }
+
+  /**
+   * Get verification events for an organization
+   */
+  async getVerificationEvents(
+    orgId: string,
+    limit: number = 10,
+  ): Promise<any[]> {
+    return this.executeWithRetry(async () => {
+      const account = await this.server.getAccount(
+        this.sourceKeypair.publicKey(),
+      );
+
+      const transaction = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          this.contract.call(
+            'get_verification_events',
+            this.createAddressScVal(orgId),
+            xdr.ScVal.scvU32(limit),
+          ),
+        )
+        .setTimeout(30)
+        .build();
+
+      const simulated = await this.server.simulateTransaction(transaction);
+
+      if (SorobanRpc.Api.isSimulationSuccess(simulated)) {
+        const result = simulated.result?.retval;
+        return this.parseVec(result) || [];
+      }
+
+      return [];
+    });
+  }
+
+  /**
+   * Parse verification metadata from contract result
+   */
+  private parseVerificationMetadata(result: any): {
+    verified: boolean;
+    verifiedAt?: number;
+    verifiedBy?: string;
+    revokedAt?: number;
+    revocationReason?: string;
+  } | null {
+    try {
+      if (!result || !result._value) {
+        return null;
+      }
+
+      const fields = result._value;
+      return {
+        verified: this.parseScVal(fields[1]),
+        verifiedAt: fields[2] ? this.parseScVal(fields[2]) : undefined,
+        verifiedBy: fields[3] ? this.parseScVal(fields[3]) : undefined,
+        revokedAt: fields[4] ? this.parseScVal(fields[4]) : undefined,
+        revocationReason: fields[5] ? this.parseScVal(fields[5]) : undefined,
+      };
+    } catch (error) {
+      this.logger.error(
+        `Failed to parse verification metadata: ${error.message}`,
+      );
+      return null;
+    }
+  }
 }
+
