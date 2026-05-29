@@ -3,7 +3,7 @@
 set -e
 
 # Configuration
-NETWORK="testnet"
+NETWORK="mainnet"
 IDENTITY="default"  # Your Stellar CLI identity
 
 echo "🚀 Deploying Lifebank contracts to ${NETWORK}..."
@@ -45,13 +45,13 @@ done
 echo "💾 Updating contracts.json with deployed IDs..."
 
 {
-  # Start with testnet object
-  jq --arg network "testnet" '.testnet = {}' contracts.json > contracts.json.tmp
+  # Start with mainnet object
+  jq --arg network "mainnet" '.mainnet = {}' contracts.json > contracts.json.tmp
 
   # Add each contract ID
   for contract in "${!CONTRACT_IDS[@]}"; do
     jq --arg contract "$contract" --arg id "${CONTRACT_IDS[$contract]}" \
-      '.testnet[$contract] = $id' contracts.json.tmp > contracts.json.tmp2
+      '.mainnet[$contract] = $id' contracts.json.tmp > contracts.json.tmp2
     mv contracts.json.tmp2 contracts.json.tmp
   done
 
@@ -61,25 +61,4 @@ echo "💾 Updating contracts.json with deployed IDs..."
 echo ""
 echo "✅ Deployment complete!"
 echo ""
-echo "📝 Contract IDs saved to .contract-ids.json"
-
-# ── Regenerate TypeScript bindings (issue #846) ────────────────────────────────
-echo ""
-echo "🔗 Regenerating TypeScript client bindings..."
-
-# Export contract IDs so generate-bindings.sh can pick them up
-export COORDINATOR_CONTRACT_ID="${CONTRACT_IDS[coordinator]:-}"
-export INVENTORY_CONTRACT_ID="${CONTRACT_IDS[inventory]}"
-export PAYMENTS_CONTRACT_ID="${CONTRACT_IDS[payments]}"
-export REQUESTS_CONTRACT_ID="${CONTRACT_IDS[requests]}"
-export TEMPERATURE_CONTRACT_ID="${CONTRACT_IDS[temperature]:-}"
-export SOROBAN_NETWORK="${NETWORK}"
-
-GENERATE_SCRIPT="$(cd "$(dirname "$0")/../.." && pwd)/scripts/generate-bindings.sh"
-
-if [[ -f "${GENERATE_SCRIPT}" ]]; then
-  bash "${GENERATE_SCRIPT}"
-else
-  echo "  ⚠️  generate-bindings.sh not found at ${GENERATE_SCRIPT} — skipping."
-  echo "  Run scripts/generate-bindings.sh manually to regenerate TypeScript bindings."
-fi
+echo "📝 Contract IDs saved to contracts.json"
