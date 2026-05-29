@@ -62,22 +62,63 @@ pub fn increment_request_counter(env: &Env) -> u64 {
     next
 }
 
+/// Store hospital authorization in persistent storage.
+/// Instance storage has a fixed size budget; using persistent storage
+/// prevents instance bloat as the number of authorized hospitals grows.
 pub fn authorize_hospital(env: &Env, hospital: &Address) {
     env.storage()
-        .instance()
+        .persistent()
         .set(&DataKey::AuthorizedHospital(hospital.clone()), &true);
 }
 
 pub fn revoke_hospital(env: &Env, hospital: &Address) {
     env.storage()
-        .instance()
+        .persistent()
         .remove(&DataKey::AuthorizedHospital(hospital.clone()));
 }
 
 pub fn is_hospital_authorized(env: &Env, hospital: &Address) -> bool {
     env.storage()
-        .instance()
+        .persistent()
         .get::<DataKey, bool>(&DataKey::AuthorizedHospital(hospital.clone()))
+        .unwrap_or(false)
+}
+
+pub fn authorize_blood_bank(env: &Env, blood_bank: &Address) {
+    env.storage()
+        .instance()
+        .set(&DataKey::AuthorizedBloodBank(blood_bank.clone()), &true);
+}
+
+pub fn revoke_blood_bank(env: &Env, blood_bank: &Address) {
+    env.storage()
+        .instance()
+        .remove(&DataKey::AuthorizedBloodBank(blood_bank.clone()));
+}
+
+pub fn is_blood_bank_authorized(env: &Env, blood_bank: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get::<DataKey, bool>(&DataKey::AuthorizedBloodBank(blood_bank.clone()))
+        .unwrap_or(false)
+}
+
+pub fn authorize_rider(env: &Env, rider: &Address) {
+    env.storage()
+        .instance()
+        .set(&DataKey::AuthorizedRider(rider.clone()), &true);
+}
+
+pub fn revoke_rider(env: &Env, rider: &Address) {
+    env.storage()
+        .instance()
+        .remove(&DataKey::AuthorizedRider(rider.clone()));
+}
+
+pub fn is_rider_authorized(env: &Env, rider: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get::<DataKey, bool>(&DataKey::AuthorizedRider(rider.clone()))
         .unwrap_or(false)
 }
 

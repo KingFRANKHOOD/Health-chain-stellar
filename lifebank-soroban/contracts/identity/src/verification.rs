@@ -1,6 +1,6 @@
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, String, Symbol, Vec};
 
-use crate::{DataKey, Error, Organization, Role};
+use crate::{DataKey, Error, Organization};
 
 /// Verification metadata for tracking on-chain verification state
 #[contracttype]
@@ -25,11 +25,14 @@ pub struct VerificationEvent {
     pub reason: Option<String>,
 }
 
-#[contractimpl]
 pub trait VerificationTrait {
     /// Verify an organization (admin only)
     /// Returns the verification metadata
-    fn verify_organization(env: Env, admin: Address, org_id: Address) -> Result<VerificationMetadata, Error>;
+    fn verify_organization(
+        env: Env,
+        admin: Address,
+        org_id: Address,
+    ) -> Result<VerificationMetadata, Error>;
 
     /// Unverify/revoke an organization (admin only)
     /// Returns the verification metadata
@@ -50,10 +53,18 @@ pub trait VerificationTrait {
     fn get_verification_timestamp(env: Env, org_id: Address) -> Result<Option<u64>, Error>;
 
     /// Get verification event history (last N events)
-    fn get_verification_events(env: Env, org_id: Address, limit: u32) -> Result<Vec<VerificationEvent>, Error>;
+    fn get_verification_events(
+        env: Env,
+        org_id: Address,
+        limit: u32,
+    ) -> Result<Vec<VerificationEvent>, Error>;
 
     /// Batch verify organizations (admin only)
-    fn batch_verify_organizations(env: Env, admin: Address, org_ids: Vec<Address>) -> Result<u32, Error>;
+    fn batch_verify_organizations(
+        env: Env,
+        admin: Address,
+        org_ids: Vec<Address>,
+    ) -> Result<u32, Error>;
 
     /// Batch revoke organizations (admin only)
     fn batch_revoke_organizations(
@@ -66,9 +77,12 @@ pub trait VerificationTrait {
 
 pub struct VerificationImpl;
 
-#[contractimpl]
 impl VerificationTrait for VerificationImpl {
-    fn verify_organization(env: Env, admin: Address, org_id: Address) -> Result<VerificationMetadata, Error> {
+    fn verify_organization(
+        env: Env,
+        admin: Address,
+        org_id: Address,
+    ) -> Result<VerificationMetadata, Error> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
@@ -106,14 +120,14 @@ impl VerificationTrait for VerificationImpl {
         Self::record_verification_event(
             &env,
             &org_id,
-            "verified".into(),
+            String::from_str(&env, "verified"),
             now,
             &admin,
             None,
         );
 
         env.events().publish(
-            (symbol_short!("org_verified"),),
+            (Symbol::new(&env, "org_verified"), symbol_short!("v1")),
             (org_id.clone(), admin, now),
         );
 
@@ -163,14 +177,16 @@ impl VerificationTrait for VerificationImpl {
         Self::record_verification_event(
             &env,
             &org_id,
-            "revoked".into(),
+            String::from_str(&env, "revoked"),
             now,
             &admin,
             Some(reason.clone()),
         );
 
-        env.events()
-            .publish((symbol_short!("org_unverified"),), (org_id.clone(), reason));
+        env.events().publish(
+            (Symbol::new(&env, "org_unverified"), symbol_short!("v1")),
+            (org_id.clone(), reason),
+        );
 
         Ok(metadata)
     }
@@ -205,7 +221,11 @@ impl VerificationTrait for VerificationImpl {
         Ok(org.verified_timestamp)
     }
 
-    fn get_verification_events(env: Env, org_id: Address, limit: u32) -> Result<Vec<VerificationEvent>, Error> {
+    fn get_verification_events(
+        env: Env,
+        org_id: Address,
+        limit: u32,
+    ) -> Result<Vec<VerificationEvent>, Error> {
         let events_key = DataKey::VerificationEvents(org_id);
         let all_events: Vec<VerificationEvent> = env
             .storage()
@@ -217,20 +237,20 @@ impl VerificationTrait for VerificationImpl {
         let mut results = Vec::new(&env);
 
         // Return last N events (reverse order)
-        let start = if all_events.len() > take as usize {
-            all_events.len() - take as usize
-        } else {
-            0
-        };
+        let start = all_events.len().saturating_sub(take);
 
         for i in start..all_events.len() {
-            results.push_back(all_events.get(i as u32).unwrap());
+            results.push_back(all_events.get(i).unwrap());
         }
 
         Ok(results)
     }
 
-    fn batch_verify_organizations(env: Env, admin: Address, org_ids: Vec<Address>) -> Result<u32, Error> {
+    fn batch_verify_organizations(
+        env: Env,
+        admin: Address,
+        org_ids: Vec<Address>,
+    ) -> Result<u32, Error> {
         admin.require_auth();
         Self::require_admin(&env, &admin)?;
 
@@ -259,7 +279,9 @@ impl VerificationTrait for VerificationImpl {
 
         for i in 0..org_ids.len() {
             let org_id = org_ids.get(i).unwrap();
-            if let Ok(_) = Self::unverify_organization(env.clone(), admin.clone(), org_id, reason.clone()) {
+            if let Ok(_) =
+                Self::unverify_organization(env.clone(), admin.clone(), org_id, reason.clone())
+            {
                 revoked_count += 1;
             }
         }

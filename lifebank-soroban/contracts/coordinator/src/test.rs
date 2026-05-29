@@ -163,6 +163,18 @@ impl MockPaymentContract {
             .persistent()
             .set(&PayKey::Payment(payment_id), &p);
     }
+
+    pub fn record_dispute(env: Env, payment_id: u64, _reason: super::payment_client::DisputeReason, _case_id: String) {
+        let mut p: Payment = env
+            .storage()
+            .persistent()
+            .get(&PayKey::Payment(payment_id))
+            .unwrap();
+        p.status = PaymentStatus::Disputed;
+        env.storage()
+            .persistent()
+            .set(&PayKey::Payment(payment_id), &p);
+    }
 }
 
 // ── Harness ───────────────────────────────────────────────────────────────────
@@ -229,11 +241,12 @@ fn test_full_happy_path() {
     let unit = MockInventoryContractClient::new(&h.env, &h.inv_id).get_blood_unit(&unit_id);
     assert_eq!(unit.status, BloodStatus::Reserved);
 
-    h.coord.confirm_delivery(&1u64, &h.admin);
+    h.coord.confirm_delivery(&1u64, &h.admin, &String::from_str(&h.env, "Hospital-A-GPS"));
 
     let wf = h.coord.get_workflow(&1u64);
     assert_eq!(wf.status, WorkflowStatus::Delivered);
     assert!(wf.delivery_confirmed);
+    assert_eq!(wf.delivery_location, Some(String::from_str(&h.env, "Hospital-A-GPS")));
 
     let unit = MockInventoryContractClient::new(&h.env, &h.inv_id).get_blood_unit(&unit_id);
     assert_eq!(unit.status, BloodStatus::Delivered);
@@ -314,7 +327,7 @@ fn test_settle_blocked_for_pending_payment() {
         .create_payment(&1u64, &PaymentStatus::Pending);
 
     h.coord.allocate_units(&1u64, &vec![&h.env, unit_id], &payment_id, &h.admin);
-    h.coord.confirm_delivery(&1u64, &h.admin);
+    h.coord.confirm_delivery(&1u64, &h.admin, &String::from_str(&h.env, "Hospital-A-GPS"));
 
     let result = h.coord.try_settle_payment(&1u64, &h.admin);
     assert_eq!(result, Err(Ok(CoordinatorError::InvalidPaymentState)));
@@ -323,7 +336,7 @@ fn test_settle_blocked_for_pending_payment() {
 #[test]
 fn test_confirm_delivery_blocked_before_allocation() {
     let h = setup();
-    let result = h.coord.try_confirm_delivery(&99u64, &h.admin);
+    let result = h.coord.try_confirm_delivery(&99u64, &h.admin, &String::from_str(&h.env, "Hospital-A-GPS"));
     assert_eq!(result, Err(Ok(CoordinatorError::WorkflowNotFound)));
 }
 
@@ -375,9 +388,243 @@ fn test_rollback_blocked_after_settlement() {
     let payment_id = create_locked_payment(&h, 1);
 
     h.coord.allocate_units(&1u64, &vec![&h.env, unit_id], &payment_id, &h.admin);
-    h.coord.confirm_delivery(&1u64, &h.admin);
+    h.coord.confirm_delivery(&1u64, &h.admin, &String::from_str(&h.env, "Hospital-A-GPS"));
     h.coord.settle_payment(&1u64, &h.admin);
 
     let result = h.coord.try_rollback(&1u64);
     assert_eq!(result, Err(Ok(CoordinatorError::CannotRollbackSettled)));
+}
+
+// ── Circuit breaker tests ─────────────────────────────────────────────────────
+
+#[test]
+fn test_coordinator_pause_blocks_allocate_units() {
+    let h = setup();
+    h.coord.pause(&h.admin);
+    assert!(h.coord.is_paused());
+
+    seed_pending_request(&h, 1);
+    let unit_id = register_unit(&h);
+    let pay_id = create_locked_payment(&h, 1);
+
+    let result = h.coord.try_allocate_units(&1u64, &vec![&h.env, unit_id], &pay_id, &h.admin);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_coordinator_pause_allows_get_workflow() {
+    let h = setup();
+
+    // Create a workflow first
+    seed_pending_request(&h, 10);
+    let unit_id = register_unit(&h);
+    let pay_id = create_locked_payment(&h, 10);
+    h.coord.allocate_units(&10u64, &vec![&h.env, unit_id], &pay_id, &h.admin);
+
+    h.coord.pause(&h.admin);
+
+    // Read still works
+    let wf = h.coord.get_workflow(&10u64);
+    assert_eq!(wf.request_id, 10);
+}
+
+#[test]
+fn test_coordinator_unpause_restores_writes() {
+    let h = setup();
+    h.coord.pause(&h.admin);
+    h.coord.unpause(&h.admin);
+    assert!(!h.coord.is_paused());
+
+    seed_pending_request(&h, 20);
+    let unit_id = register_unit(&h);
+    let pay_id = create_locked_payment(&h, 20);
+    h.coord.allocate_units(&20u64, &vec![&h.env, unit_id], &pay_id, &h.admin);
+    assert_eq!(h.coord.get_workflow(&20u64).status, WorkflowStatus::Allocated);
+}
+
+#[test]
+#[should_panic]
+fn test_coordinator_non_admin_cannot_pause() {
+    let h = setup();
+    let attacker = Address::generate(&h.env);
+    h.coord.pause(&attacker);
+}
+
+// ── Temperature excursion → dispute integration tests (issue #477) ────────────
+
+use super::ExcursionSummary;
+
+fn make_excursion(unit_id: u64) -> ExcursionSummary {
+    ExcursionSummary {
+        unit_id,
+        violation_count: 3,
+        peak_celsius_x100: 1200, // 12.00°C — above threshold
+        detected_at: 1000,
+    }
+}
+
+/// Full chain: flag_temperature_breach transitions Locked → Disputed.
+#[test]
+fn test_flag_temperature_breach_transitions_locked_to_disputed() {
+    let h = setup();
+    let payment_id = create_locked_payment(&h, 99);
+
+    let excursion = make_excursion(42);
+    h.coord
+        .flag_temperature_breach(&h.admin, &payment_id, &excursion);
+
+    let payment = MockPaymentContractClient::new(&h.env, &h.pay_id).get_payment(&payment_id);
+    assert_eq!(
+        payment.status,
+        PaymentStatus::Disputed,
+        "Payment must be Disputed after temperature breach"
+    );
+}
+
+/// flag_temperature_breach on a non-Locked payment returns InvalidPaymentState.
+#[test]
+fn test_flag_temperature_breach_non_locked_payment_fails() {
+    let h = setup();
+    // Create a Released payment
+    let payment_id = MockPaymentContractClient::new(&h.env, &h.pay_id)
+        .create_payment(&1u64, &PaymentStatus::Released);
+
+    let excursion = make_excursion(1);
+    let result = h
+        .coord
+        .try_flag_temperature_breach(&h.admin, &payment_id, &excursion);
+    assert_eq!(
+        result,
+        Err(Ok(CoordinatorError::InvalidPaymentState)),
+        "Non-Locked payment must return InvalidPaymentState"
+    );
+}
+
+/// flag_temperature_breach on a missing payment returns PaymentNotFound.
+#[test]
+fn test_flag_temperature_breach_missing_payment_fails() {
+    let h = setup();
+    let excursion = make_excursion(1);
+    let result = h
+        .coord
+        .try_flag_temperature_breach(&h.admin, &9999u64, &excursion);
+    assert_eq!(
+        result,
+        Err(Ok(CoordinatorError::PaymentNotFound)),
+        "Missing payment must return PaymentNotFound"
+    );
+}
+
+/// Paused coordinator rejects flag_temperature_breach.
+#[test]
+fn test_flag_temperature_breach_blocked_when_paused() {
+    let h = setup();
+    let payment_id = create_locked_payment(&h, 1);
+    h.coord.pause(&h.admin);
+
+    let excursion = make_excursion(1);
+    let result = h
+        .coord
+        .try_flag_temperature_breach(&h.admin, &payment_id, &excursion);
+    assert_eq!(result, Err(Ok(CoordinatorError::ContractPaused)));
+
+    // Payment must remain Locked
+    let payment = MockPaymentContractClient::new(&h.env, &h.pay_id).get_payment(&payment_id);
+    assert_eq!(payment.status, PaymentStatus::Locked);
+}
+
+// ── Workflow expiry tests (issue #855) ────────────────────────────────────────
+
+use soroban_sdk::testutils::Ledger as _;
+
+/// expire_workflow succeeds once the deadline has elapsed, releasing units
+/// and refunding the escrowed payment.
+#[test]
+fn test_expire_workflow_rolls_back_after_deadline() {
+    let h = setup();
+    h.env.ledger().with_mut(|l| l.timestamp = 1_000);
+
+    seed_pending_request(&h, 1);
+    let unit_id = register_unit(&h);
+    let payment_id = create_locked_payment(&h, 1);
+
+    h.coord.allocate_units(&1u64, &vec![&h.env, unit_id], &payment_id, &h.admin);
+
+    let wf = h.coord.get_workflow(&1u64);
+    assert_eq!(wf.status, WorkflowStatus::Allocated);
+    // expires_at should be 1_000 + 6 * 3600 = 22_600
+    assert_eq!(wf.expires_at, 1_000 + 6 * 60 * 60);
+
+    // Advance time past the expiry window.
+    h.env.ledger().with_mut(|l| l.timestamp = wf.expires_at + 1);
+
+    h.coord.expire_workflow(&1u64);
+
+    let wf_after = h.coord.get_workflow(&1u64);
+    assert_eq!(wf_after.status, WorkflowStatus::RolledBack, "Expired workflow must be RolledBack");
+
+    let unit = MockInventoryContractClient::new(&h.env, &h.inv_id).get_blood_unit(&unit_id);
+    assert_eq!(unit.status, BloodStatus::Available, "Units must be released after expiry");
+
+    let payment = MockPaymentContractClient::new(&h.env, &h.pay_id).get_payment(&payment_id);
+    assert_eq!(payment.status, PaymentStatus::Refunded, "Payment must be Refunded after expiry");
+}
+
+/// expire_workflow is rejected when the deadline has not yet elapsed.
+#[test]
+fn test_expire_workflow_blocked_before_deadline() {
+    let h = setup();
+    h.env.ledger().with_mut(|l| l.timestamp = 1_000);
+
+    seed_pending_request(&h, 2);
+    let unit_id = register_unit(&h);
+    let payment_id = create_locked_payment(&h, 2);
+
+    h.coord.allocate_units(&2u64, &vec![&h.env, unit_id], &payment_id, &h.admin);
+
+    // Time has NOT advanced past expires_at.
+    let result = h.coord.try_expire_workflow(&2u64);
+    assert_eq!(
+        result,
+        Err(Ok(CoordinatorError::WorkflowNotExpired)),
+        "expire_workflow must fail before deadline"
+    );
+
+    // Workflow must remain Allocated.
+    let wf = h.coord.get_workflow(&2u64);
+    assert_eq!(wf.status, WorkflowStatus::Allocated);
+}
+
+/// expire_workflow on a non-existent workflow returns WorkflowNotFound.
+#[test]
+fn test_expire_workflow_not_found() {
+    let h = setup();
+    h.env.ledger().with_mut(|l| l.timestamp = 99_999);
+    let result = h.coord.try_expire_workflow(&9999u64);
+    assert_eq!(result, Err(Ok(CoordinatorError::WorkflowNotFound)));
+}
+
+/// expire_workflow on an already-delivered workflow returns InvalidWorkflowState.
+#[test]
+fn test_expire_workflow_blocked_for_delivered_workflow() {
+    let h = setup();
+    h.env.ledger().with_mut(|l| l.timestamp = 1_000);
+
+    seed_pending_request(&h, 3);
+    let unit_id = register_unit(&h);
+    let payment_id = create_locked_payment(&h, 3);
+
+    h.coord.allocate_units(&3u64, &vec![&h.env, unit_id], &payment_id, &h.admin);
+    h.coord.confirm_delivery(&3u64, &h.admin, &String::from_str(&h.env, "Hospital-B"));
+
+    // Advance past expiry.
+    let wf = h.coord.get_workflow(&3u64);
+    h.env.ledger().with_mut(|l| l.timestamp = wf.expires_at + 1);
+
+    let result = h.coord.try_expire_workflow(&3u64);
+    assert_eq!(
+        result,
+        Err(Ok(CoordinatorError::InvalidWorkflowState)),
+        "expire_workflow must fail for a Delivered workflow"
+    );
 }

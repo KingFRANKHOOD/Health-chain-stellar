@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, UseGuards, Req, Ip, ForbiddenException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, UseGuards, Req, Ip, ForbiddenException } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 
 import { Permission } from '../auth/enums/permission.enum';
@@ -6,6 +6,8 @@ import { RequirePermissions } from '../auth/decorators/require-permissions.decor
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { Request } from 'express';
+
+import { PaginationQueryDto } from '../common/pagination';
 
 import { ApprovalService } from './approval.service';
 import { ApprovalStatus } from './enums/approval.enum';
@@ -18,15 +20,15 @@ export class ApprovalController {
   constructor(private readonly approvalService: ApprovalService) {}
 
   @Get('pending')
-  @RequirePermissions(Permission.ADMIN_ACCESS)
+  @RequirePermissions(Permission.REQUEST_APPROVE)
   @ApiOperation({ summary: 'Get all pending approval requests' })
   @ApiResponse({ status: 200, description: 'Requests fetched' })
-  async getPending(@Req() req: Request) {
-    return this.approvalService.getPendingRequests();
+  async getPending(@Req() req: Request, @Query() query: PaginationQueryDto) {
+    return this.approvalService.getPendingRequests(query);
   }
 
   @Get(':id')
-  @RequirePermissions(Permission.ADMIN_ACCESS)
+  @RequirePermissions(Permission.REQUEST_APPROVE)
   @ApiOperation({ summary: 'Get details of an approval request' })
   @ApiResponse({ status: 200, description: 'Request details fetched' })
   async getDetail(@Param('id') id: string) {
@@ -34,7 +36,7 @@ export class ApprovalController {
   }
 
   @Post(':id/approve')
-  @RequirePermissions(Permission.ADMIN_ACCESS)
+  @RequirePermissions(Permission.REQUEST_APPROVE)
   @ApiOperation({ summary: 'Approve a request' })
   @ApiResponse({ status: 200, description: 'Request approved' })
   async approve(
@@ -54,7 +56,7 @@ export class ApprovalController {
   }
 
   @Post(':id/reject')
-  @RequirePermissions(Permission.ADMIN_ACCESS)
+  @RequirePermissions(Permission.REQUEST_APPROVE)
   @ApiOperation({ summary: 'Reject a request' })
   @ApiResponse({ status: 200, description: 'Request rejected' })
   async reject(

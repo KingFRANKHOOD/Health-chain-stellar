@@ -1,12 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 
-import { Repository, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
+import { Repository, MoreThanOrEqual } from 'typeorm';
 
 import { BloodRequestItemEntity } from '../../blood-requests/entities/blood-request-item.entity';
 import { BloodRequestEntity } from '../../blood-requests/entities/blood-request.entity';
-import { BloodUnitEntity } from '../../blood-units/entities/blood-unit.entity';
+import { BloodUnit } from '../../blood-units/entities/blood-unit.entity';
+import { BloodStatus } from '../../blood-units/enums/blood-status.enum';
+import { BloodComponent } from '../../blood-units/enums/blood-component.enum';
 import { InventoryStockEntity } from '../../inventory/entities/inventory-stock.entity';
+import { BloodCompatibilityEngine } from '../compatibility/blood-compatibility.engine';
+import type { BloodTypeStr } from '../compatibility/compatibility.types';
 
 export interface BloodTypeCompatibility {
   [key: string]: {
@@ -22,7 +26,9 @@ export interface MatchResult {
   quantityMl: number;
   expirationDate: Date;
   matchScore: number;
-  matchType: 'exact' | 'compatible' | 'partial';
+  matchType: 'exact' | 'compatible' | 'emergency' | 'partial';
+  /** Human-readable explanation of why this unit is compatible */
+  explanation: string;
   distance?: number;
 }
 
@@ -94,14 +100,15 @@ export class BloodMatchingService {
   };
 
   constructor(
-    @InjectRepository(BloodUnitEntity)
-    private readonly bloodUnitRepository: Repository<BloodUnitEntity>,
+    @InjectRepository(BloodUnit)
+    private readonly bloodUnitRepository: Repository<BloodUnit>,
     @InjectRepository(BloodRequestEntity)
     private readonly bloodRequestRepository: Repository<BloodRequestEntity>,
     @InjectRepository(BloodRequestItemEntity)
     private readonly bloodRequestItemRepository: Repository<BloodRequestItemEntity>,
     @InjectRepository(InventoryStockEntity)
     private readonly inventoryRepository: Repository<InventoryStockEntity>,
+    private readonly compatibilityEngine: BloodCompatibilityEngine,
   ) {}
 
   async findMatches(request: MatchingRequest): Promise<MatchingResponse> {
@@ -195,13 +202,13 @@ export class BloodMatchingService {
   private async findAvailableUnits(
     bloodTypes: string[],
     quantityMl: number,
-  ): Promise<BloodUnitEntity[]> {
+  ): Promise<BloodUnit[]> {
     const now = new Date();
 
     return this.bloodUnitRepository.find({
       where: {
         bloodType: bloodTypes as any,
-        status: 'available' as any,
+        status: BloodStatus.AVAILABLE,
         expiresAt: MoreThanOrEqual(now),
       },
       order: {
@@ -211,17 +218,23 @@ export class BloodMatchingService {
   }
 
   private async scoreMatches(
-    units: BloodUnitEntity[],
+    units: BloodUnit[],
     request: MatchingRequest,
   ): Promise<MatchResult[]> {
     const scoredMatches: MatchResult[] = [];
+    const isEmergency = request.urgency === 'critical';
 
     for (const unit of units) {
-      const matchScore = await this.calculateMatchScore(unit, request);
-      const matchType = this.determineMatchType(
-        unit.bloodType,
-        request.bloodType,
+      const compatResult = this.compatibilityEngine.check(
+        unit.bloodType as BloodTypeStr,
+        request.bloodType as BloodTypeStr,
+        BloodComponent.RED_CELLS,
+        isEmergency,
       );
+
+      if (!compatResult.compatible) continue;
+
+      const matchScore = await this.calculateMatchScore(unit, request);
 
       scoredMatches.push({
         bloodUnitId: unit.id,
@@ -230,7 +243,8 @@ export class BloodMatchingService {
         quantityMl: unit.volumeMl,
         expirationDate: unit.expiresAt,
         matchScore,
-        matchType,
+        matchType: compatResult.matchType === 'incompatible' ? 'partial' : compatResult.matchType,
+        explanation: compatResult.explanation,
       });
     }
 
@@ -238,7 +252,7 @@ export class BloodMatchingService {
   }
 
   private async calculateMatchScore(
-    unit: BloodUnitEntity,
+    unit: BloodUnit,
     request: MatchingRequest,
   ): Promise<number> {
     let score = 0;

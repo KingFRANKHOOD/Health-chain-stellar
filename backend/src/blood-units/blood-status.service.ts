@@ -13,6 +13,7 @@ import { LessThan, Repository } from 'typeorm';
 import { NotificationChannel } from '../notifications/enums/notification-channel.enum';
 import { NotificationsService } from '../notifications/notifications.service';
 import { BlockchainEvent } from '../soroban/entities/blockchain-event.entity';
+import { SorobanService } from '../soroban/soroban.service';
 
 import {
   BulkUpdateBloodStatusDto,
@@ -32,6 +33,7 @@ export const ALLOWED_TRANSITIONS: Record<BloodStatus, BloodStatus[]> = {
   [BloodStatus.AVAILABLE]: [
     BloodStatus.RESERVED,
     BloodStatus.IN_TRANSIT,
+    BloodStatus.IN_TRANSFER,
     BloodStatus.QUARANTINED,
     BloodStatus.PROCESSING,
     BloodStatus.EXPIRED,
@@ -44,6 +46,7 @@ export const ALLOWED_TRANSITIONS: Record<BloodStatus, BloodStatus[]> = {
     BloodStatus.EXPIRED,
   ],
   [BloodStatus.IN_TRANSIT]: [BloodStatus.DELIVERED, BloodStatus.DISCARDED],
+  [BloodStatus.IN_TRANSFER]: [BloodStatus.AVAILABLE, BloodStatus.DISCARDED],
   [BloodStatus.DELIVERED]: [],
   [BloodStatus.EXPIRED]: [BloodStatus.DISCARDED],
   [BloodStatus.QUARANTINED]: [BloodStatus.AVAILABLE, BloodStatus.DISCARDED],
@@ -54,6 +57,7 @@ export const ALLOWED_TRANSITIONS: Record<BloodStatus, BloodStatus[]> = {
     BloodStatus.DISCARDED,
   ],
 };
+
 
 @Injectable()
 export class BloodStatusService {
@@ -67,6 +71,7 @@ export class BloodStatusService {
     @InjectRepository(BlockchainEvent)
     private readonly blockchainEventRepository: Repository<BlockchainEvent>,
     private readonly notificationsService: NotificationsService,
+    private readonly sorobanService: SorobanService,
   ) {}
 
   async updateStatus(
@@ -294,6 +299,29 @@ export class BloodStatusService {
     changedBy: string | null,
   ): Promise<void> {
     try {
+      const blockchainUnitId = Number(unit.blockchainUnitId);
+      const canMirrorOnChain = Number.isFinite(blockchainUnitId);
+
+      if (canMirrorOnChain && newStatus === BloodStatus.QUARANTINED) {
+        await this.sorobanService.quarantineBloodUnit({
+          unitId: blockchainUnitId,
+          reason: 'OTHER',
+        });
+      }
+
+      if (
+        canMirrorOnChain &&
+        previousStatus === BloodStatus.QUARANTINED &&
+        (newStatus === BloodStatus.AVAILABLE || newStatus === BloodStatus.DISCARDED)
+      ) {
+        await this.sorobanService.finalizeQuarantine({
+          unitId: blockchainUnitId,
+          disposition:
+            newStatus === BloodStatus.AVAILABLE ? 'RELEASE' : 'DISCARD',
+          reason: 'OTHER',
+        });
+      }
+
       const uniqueSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       await this.blockchainEventRepository.save(
         this.blockchainEventRepository.create({

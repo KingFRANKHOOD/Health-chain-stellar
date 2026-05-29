@@ -11,4 +11,14 @@ pub enum ContractError {
     InvalidQuantity = 304,
     NotAuthorizedHospital = 305,
     RequestNotFound = 306,
+    UnauthorizedStatusTransition = 307,
+    InvalidStatusTransition = 308,
+    NotAuthorizedBloodBank = 309,
+    NotAuthorizedRider = 310,
+    /// Attempted status transition is not valid for the current request state.
+    InvalidRequestStatus = 307,
+    /// Caller is not the hospital that owns this request.
+    NotRequestOwner = 308,
+    /// Transition requires a non-empty human-readable reason.
+    InvalidReason = 309,
 }

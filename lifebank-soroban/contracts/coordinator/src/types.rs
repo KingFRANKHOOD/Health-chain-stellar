@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Vec};
+use soroban_sdk::{contracttype, String, Vec};
 
 /// Canonical workflow states — shared identifier across all contracts.
 #[contracttype]
@@ -29,6 +29,22 @@ pub struct WorkflowRecord {
     pub unit_ids: Vec<u64>,
     pub status: WorkflowStatus,
     pub delivery_confirmed: bool,
+    /// Geographic location or identifier supplied by the confirmer at delivery.
+    /// None until confirm_delivery() is called.
+    pub delivery_location: Option<String>,
+    /// Unix timestamp after which the workflow may be expired by anyone.
+    /// Set at allocation time: `ledger.timestamp() + WORKFLOW_TIMEOUT_SECS`.
+    pub expires_at: u64,
+}
+
+/// Summary of a sustained temperature excursion (mirrors temperature contract type).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExcursionSummary {
+    pub unit_id: u64,
+    pub violation_count: u32,
+    pub peak_celsius_x100: i32,
+    pub detected_at: u64,
 }
 
 #[contracttype]
@@ -39,4 +55,15 @@ pub enum DataKey {
     InventoryContract,
     PaymentContract,
     Workflow(u64),
+    Paused,
+    /// Emergency halt flag — set by emergency_halt(); blocks all in-flight
+    /// workflow steps until manually cleared by admin.
+    EmergencyHalt,
+}
+
+/// Status applied to all in-flight workflows when emergency_halt() is triggered.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkflowHaltedStatus {
+    Halted,
 }

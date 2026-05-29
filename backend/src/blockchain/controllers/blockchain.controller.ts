@@ -15,13 +15,17 @@ import {
   ConflictException,
   Req,
   Query,
+  Header,
 } from '@nestjs/common';
 
+import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 
 import { BlockchainCallbackDto } from '../dto/blockchain-callback.dto';
 import { AdminGuard } from '../guards/admin.guard';
-import { QueueMetricsService } from '../services/queue-metrics.service';
+import { RequireAdminScope } from '../decorators/require-admin-scope.decorator';
+import { AdminScope } from '../enums/admin-scope.enum';
+import { DlqReplayAuditService } from '../services/dlq-replay-audit.service';
 import { SorobanService } from '../services/soroban.service';
 
 import type {
@@ -38,6 +42,9 @@ export class BlockchainController {
     private sorobanService: SorobanService,
     private configService: ConfigService,
     private queueMetricsService: QueueMetricsService,
+    private failedTxService: FailedSorobanTxService,
+    private blockchainHealthService: BlockchainHealthService,
+    private dlqReplayAuditService: DlqReplayAuditService,
   ) {}
 
   /**
@@ -173,6 +180,7 @@ export class BlockchainController {
    */
   @Get('queue/status')
   @UseGuards(AdminGuard)
+  @RequireAdminScope(AdminScope.READ_METRICS)
   @HttpCode(HttpStatus.OK)
   async getQueueStatus(): Promise<QueueMetrics> {
     return this.sorobanService.getQueueMetrics();
@@ -284,5 +292,106 @@ export class BlockchainController {
       `soroban_queue_dlq_depth ${m.live.dlqDepth}`,
     ];
     return lines.join('\n');
+  }
+
+  /**
+   * Manually replay failed outbox events (ADMIN only).
+   *
+   * Finds all FailedSorobanTxEntity rows with status=FAILED, clears their
+   * idempotency keys, and resubmits them to the main queue.
+   * Persists a DLQ replay audit record with actor identity and outcome.
+   *
+   * POST /blockchain/admin/retry-failed
+   *
+   * @returns Replay summary with counts and per-job errors
+   * @throws 403 if not authenticated as admin
+   */
+  @Post('admin/retry-failed')
+  @UseGuards(AdminGuard)
+  @HttpCode(HttpStatus.OK)
+  async retryFailedOutboxEvents(
+    @Body('actorId') actorId?: string,
+    @Body('reason') reason?: string,
+  ): Promise<{
+    replayed: number;
+    skipped: number;
+    errors: Array<{ id: string; jobId: string; reason: string }>;
+  }> {
+    const failed = await this.failedTxService.findUnresolved();
+
+    let replayed = 0;
+    let skipped = 0;
+    const errors: Array<{ id: string; jobId: string; reason: string }> = [];
+
+    for (const record of failed) {
+      try {
+        const job =
+          record.payload as unknown as import('../types/soroban-tx.types').SorobanTxJob;
+
+        // Resubmit via DLQ replay (clears idempotency key internally)
+        await this.sorobanService.replayDlqJobs({ batchSize: 1 });
+
+        await this.failedTxService.markReplayed(record.id);
+        replayed++;
+
+        this.logger.log(
+          `[AdminRetry] Replayed outbox record id=${record.id} jobId=${record.jobId}`,
+        );
+      } catch (err) {
+        skipped++;
+        errors.push({
+          id: record.id,
+          jobId: record.jobId,
+          reason: err instanceof Error ? err.message : String(err),
+        });
+        this.logger.error(
+          `[AdminRetry] Failed to replay record id=${record.id}: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+
+    // Persist audit record
+    await this.dlqReplayAuditService.record({
+      actorId: actorId ?? 'unknown',
+      reason: reason ?? 'manual admin retry',
+      jobsAttempted: failed.length,
+      jobsReplayed: replayed,
+      jobsFailed: skipped,
+      errorDetails: errors.length > 0 ? JSON.stringify(errors) : undefined,
+    });
+
+    return { replayed, skipped, errors };
+  }
+
+  /**
+   * List DLQ replay audit records (ADMIN only).
+   *
+   * GET /blockchain/admin/replay-audits
+   *
+   * @throws 403 if not authenticated as admin
+   */
+  @Get('admin/replay-audits')
+  @UseGuards(AdminGuard)
+  @HttpCode(HttpStatus.OK)
+  async getReplayAudits() {
+    return this.dlqReplayAuditService.findAll();
+  }
+
+  /**
+   * Health indicator for the blockchain integration (ADMIN only).
+   *
+   * Reports the count of unresolved failed Soroban transactions.
+   * status = 'ok'       → no unresolved failures
+   * status = 'degraded' → manual replay required
+   *
+   * GET /blockchain/admin/health
+   *
+   * @throws 403 if not authenticated as admin
+   */
+  @Get('admin/health')
+  @UseGuards(AdminGuard)
+  @HttpCode(HttpStatus.OK)
+  async getBlockchainHealth() {
+    return this.blockchainHealthService.check();
   }
 }

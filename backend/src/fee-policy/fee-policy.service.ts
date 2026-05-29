@@ -9,16 +9,28 @@ import {
     FeePreviewDto,
     FeeBreakdownDto,
 } from './dto/fee-policy.dto';
+import { FeePolicyAnalyzerService } from './fee-policy-analyzer.service';
 
 @Injectable()
 export class FeePolicyService {
     constructor(
         @InjectRepository(FeePolicyEntity)
         private readonly repository: Repository<FeePolicyEntity>,
+        private readonly analyzerService: FeePolicyAnalyzerService,
     ) { }
 
     async create(createDto: CreateFeePolicyDto): Promise<FeePolicyEntity> {
         const policy = this.repository.create(createDto);
+
+        // Check for conflicts before saving
+        const conflicts = await this.analyzerService.validatePolicyForActivation(policy);
+        if (conflicts.some(c => c.severity === 'error')) {
+            throw new BadRequestException({
+                message: 'Policy conflicts detected',
+                conflicts: conflicts.filter(c => c.severity === 'error'),
+            });
+        }
+
         return this.repository.save(policy);
     }
 
@@ -42,6 +54,43 @@ export class FeePolicyService {
             throw new BadRequestException('No applicable fee policy found');
         }
         return this.computeBreakdown(applicablePolicy, dto);
+    }
+
+    /**
+     * Compute fees with an optional surge multiplier applied to the platform fee.
+     * The surgeMultiplier and bloodType are recorded in the audit hash for traceability.
+     */
+    async computeFeeWithSurge(
+        dto: FeePreviewDto,
+        surgeMultiplier: number,
+        bloodType: string,
+    ): Promise<FeeBreakdownDto> {
+        const applicablePolicy = await this.findApplicablePolicy(dto);
+        if (!applicablePolicy) {
+            throw new BadRequestException('No applicable fee policy found');
+        }
+        const breakdown = this.computeBreakdown(applicablePolicy, dto);
+        const adjustedPlatformFee = breakdown.platformFee * surgeMultiplier;
+        const feeDelta = adjustedPlatformFee - breakdown.platformFee;
+        return {
+            ...breakdown,
+            platformFee: adjustedPlatformFee,
+            totalFee: breakdown.totalFee + feeDelta,
+            auditHash: this.generateSurgeAuditHash(applicablePolicy, dto, surgeMultiplier, bloodType),
+        };
+    }
+
+    private generateSurgeAuditHash(
+        policy: FeePolicyEntity,
+        dto: FeePreviewDto,
+        surgeMultiplier: number,
+        bloodType: string,
+    ): string {
+        const inputs = `${policy.id}${dto.geographyCode}${dto.distanceKm}${dto.urgencyTier}|surge:${bloodType}:${surgeMultiplier}`;
+        return inputs
+            .split('')
+            .reduce((a, b) => ((a << 5) - a + b.charCodeAt(0)) | 0, 0)
+            .toString();
     }
 
     private async findApplicablePolicy(
@@ -105,6 +154,16 @@ export class FeePolicyService {
     ): Promise<FeePolicyEntity> {
         await this.findOne(id);
         const policy = this.repository.create({ id, ...updateDto });
+
+        // Check for conflicts before saving
+        const conflicts = await this.analyzerService.validatePolicyForActivation(policy);
+        if (conflicts.some(c => c.severity === 'error')) {
+            throw new BadRequestException({
+                message: 'Policy conflicts detected',
+                conflicts: conflicts.filter(c => c.severity === 'error'),
+            });
+        }
+
         return this.repository.save(policy);
     }
 

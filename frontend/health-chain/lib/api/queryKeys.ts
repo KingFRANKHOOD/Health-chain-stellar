@@ -32,10 +32,10 @@ export const queryKeys = {
     stats: ["dashboard", "stats"] as const,
   },
 
- feat/public-transparency-portal
   transparency: {
     metrics: ["transparency", "metrics"] as const,
-=======
+  },
+
   /**
    * Anomalies (Issue #382)
    */
@@ -44,6 +44,22 @@ export const queryKeys = {
     list: (params: import("@/lib/types/anomaly").AnomalyQueryParams) =>
       ["anomalies", "list", params] as const,
     detail: (id: string) => ["anomalies", "detail", id] as const,
- main
+  },
+
+  quarantine: {
+    all: ["quarantine"] as const,
+    list: (params: Record<string, unknown>) =>
+      ["quarantine", "list", params] as const,
+    detail: (id: string) => ["quarantine", "detail", id] as const,
+  },
+
+  policyCenter: {
+    all: ["policyCenter"] as const,
+    versions: (policyName?: string) =>
+      ["policyCenter", "versions", policyName ?? "operational-core"] as const,
+    active: (policyName?: string) =>
+      ["policyCenter", "active", policyName ?? "operational-core"] as const,
+    compare: (fromVersionId: string, toVersionId: string) =>
+      ["policyCenter", "compare", fromVersionId, toVersionId] as const,
   },
 } as const;

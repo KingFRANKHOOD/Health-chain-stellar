@@ -2,11 +2,13 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
-import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
 
 import { AppModule } from './app.module';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AppErrorFilter } from './common/filters/irrecoverable-error.filter';
-import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
+import { ValidationExceptionFilter } from './common/filters/validation-exception.filter';
+import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
+import { DatabaseSyncGuard } from './config/database-sync.guard';
 import { validateEnv } from './config/validate-env';
 import { ThrottlerExceptionFilter } from './throttler/throttler-exception.filter';
 
@@ -19,22 +21,29 @@ async function bootstrap() {
     process.exit(1);
   }
 
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  // Fail fast if synchronize is enabled outside local environments.
+  const nodeEnv = process.env.NODE_ENV ?? 'development';
+  const synchronize = nodeEnv === 'development' || nodeEnv === 'test';
+  DatabaseSyncGuard.validateSynchronizeConfig(nodeEnv, synchronize);
+
+  const app = await NestFactory.create(AppModule);
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
+  const isProduction =
+    configService.get<string>('NODE_ENV', 'development') === 'production';
 
-  // Use Winston as the NestJS logger
-  app.useLogger(app.get(WINSTON_MODULE_NEST_PROVIDER));
+  const correlationIdMiddleware = new CorrelationIdMiddleware();
+  app.use((req, res, next) => correlationIdMiddleware.use(req, res, next));
 
   if (configService.get<string>('TRUST_PROXY', 'false') === 'true') {
     app.getHttpAdapter().getInstance().set('trust proxy', 1);
   }
 
-  // Order matters: GlobalExceptionFilter runs last (catches everything)
   app.useGlobalFilters(
-    new ThrottlerExceptionFilter(),
-    new AppErrorFilter(),
-    app.get(GlobalExceptionFilter),
+    new ValidationExceptionFilter(isProduction),
+    new ThrottlerExceptionFilter(isProduction),
+    new AppErrorFilter(isProduction),
+    new AllExceptionsFilter(isProduction),
   );
 
   // Global validation pipe

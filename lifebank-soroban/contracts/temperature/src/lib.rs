@@ -5,13 +5,27 @@ mod storage;
 mod types;
 
 use crate::error::ContractError;
-use crate::types::{DataKey, TemperatureReading, TemperatureSummary, TemperatureThreshold};
-use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
+use crate::types::{DataKey, PendingThresholdChange, TemperatureReading, TemperatureSummary, TemperatureThreshold};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, Vec};
+use crate::types::{DataKey, ExcursionSummary, TemperatureReading, TemperatureSummary, TemperatureThreshold};
+use soroban_sdk::{contract, contractclient, contractimpl, contracttype, Address, Env, Vec};
 
 const PAGE_SIZE: u32 = 20;
+const GOVERNANCE_DELAY_SECONDS: u64 = 7 * 24 * 60 * 60; // 7 days
 
 #[contract]
 pub struct TemperatureContract;
+
+/// Minimal coordinator interface for cross-contract excursion reporting.
+#[contractclient(name = "CoordinatorContractClient")]
+pub trait CoordinatorContractInterface {
+    fn flag_temperature_breach(
+        env: soroban_sdk::Env,
+        caller: Address,
+        payment_id: u64,
+        excursion_summary: ExcursionSummary,
+    ) -> Result<(), soroban_sdk::Error>;
+}
 
 #[contractimpl]
 impl TemperatureContract {
@@ -26,6 +40,154 @@ impl TemperatureContract {
         Ok(())
     }
 
+    /// Propose a threshold change with time-lock governance
+    ///
+    /// This function initiates a 7-day delay before the threshold can be applied.
+    /// The delay provides transparency and allows stakeholders to review parameter changes.
+    ///
+    /// # Arguments
+    /// * `admin` - Admin address proposing the change
+    /// * `unit_id` - Blood unit ID for which to change the threshold
+    /// * `min_celsius_x100` - New minimum temperature threshold
+    /// * `max_celsius_x100` - New maximum temperature threshold
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Caller is not the admin
+    /// - `InvalidThreshold`: Min >= Max
+    pub fn propose_threshold_change(
+        env: Env,
+        admin: Address,
+        unit_id: u64,
+        min_celsius_x100: i32,
+        max_celsius_x100: i32,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+
+    /// Pause all state-mutating functions. Admin only.
+    pub fn pause(env: Env, admin: Address) -> Result<(), ContractError> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(ContractError::Unauthorized);
+        }
+
+        if min_celsius_x100 >= max_celsius_x100 {
+            return Err(ContractError::InvalidThreshold);
+        }
+
+        let effective_at = env.ledger().timestamp() + GOVERNANCE_DELAY_SECONDS;
+        let pending_change = PendingThresholdChange {
+            unit_id,
+            new_min_celsius_x100: min_celsius_x100,
+            new_max_celsius_x100: max_celsius_x100,
+            effective_at,
+            proposed_by: admin.clone(),
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingThresholdChange(unit_id), &pending_change);
+
+        // Emit event for transparency
+        env.events().publish(
+            (symbol_short!("threshold"), symbol_short!("proposed")),
+            (unit_id, min_celsius_x100, max_celsius_x100, effective_at),
+        );
+
+        Ok(())
+    }
+
+    /// Apply a pending threshold change after the time-lock period
+    ///
+    /// Can be called by anyone once the delay period has passed.
+    ///
+    /// # Arguments
+    /// * `unit_id` - Blood unit ID for which to apply the threshold change
+    ///
+    /// # Errors
+    /// - `NoPendingChange`: No pending change exists for this unit
+    /// - `ChangeNotReady`: Time-lock period has not elapsed yet
+    pub fn apply_threshold_change(env: Env, unit_id: u64) -> Result<(), ContractError> {
+        let pending_change: PendingThresholdChange = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingThresholdChange(unit_id))
+            .ok_or(ContractError::NoPendingChange)?;
+
+        let current_time = env.ledger().timestamp();
+        if current_time < pending_change.effective_at {
+            return Err(ContractError::ChangeNotReady);
+        }
+
+        // Apply the threshold change
+        let threshold = TemperatureThreshold {
+            min_celsius_x100: pending_change.new_min_celsius_x100,
+            max_celsius_x100: pending_change.new_max_celsius_x100,
+        };
+        storage::set_threshold(&env, unit_id, &threshold);
+
+        // Remove the pending change
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingThresholdChange(unit_id));
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("threshold"), symbol_short!("applied")),
+            (unit_id, threshold.min_celsius_x100, threshold.max_celsius_x100),
+        );
+
+        Ok(())
+    }
+
+    /// Get pending threshold change for a unit (if any)
+    pub fn get_pending_threshold_change(
+        env: Env,
+        unit_id: u64,
+    ) -> Option<PendingThresholdChange> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PendingThresholdChange(unit_id))
+    }
+
+    /// Set threshold immediately (legacy method - kept for backward compatibility)
+    ///
+    /// WARNING: This bypasses governance. Consider using propose_threshold_change instead.
+        env.storage().instance().set(&DataKey::Paused, &true);
+        Ok(())
+    }
+
+    /// Unpause the contract. Admin only.
+    pub fn unpause(env: Env, admin: Address) -> Result<(), ContractError> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(ContractError::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::Paused, &false);
+        Ok(())
+    }
+
+    /// Returns whether the contract is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), ContractError> {
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+        {
+            return Err(ContractError::ContractPaused);
+        }
+        Ok(())
+    }
+
     pub fn set_threshold(
         env: Env,
         admin: Address,
@@ -34,6 +196,7 @@ impl TemperatureContract {
         max_celsius_x100: i32,
     ) -> Result<(), ContractError> {
         admin.require_auth();
+        Self::require_not_paused(&env)?;
 
         let stored_admin = storage::get_admin(&env);
         if admin != stored_admin {
@@ -58,6 +221,7 @@ impl TemperatureContract {
         temperature_celsius_x100: i32,
         timestamp: u64,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let threshold =
             storage::get_threshold(&env, unit_id).ok_or(ContractError::ThresholdNotFound)?;
 
@@ -123,64 +287,82 @@ impl TemperatureContract {
         Ok(())
     }
 
-    pub fn get_violations(env: Env, unit_id: u64) -> Result<Vec<TemperatureReading>, ContractError> {
+    pub fn get_violations(env: Env, unit_id: u64, page: u32, page_size: u32) -> Result<Vec<TemperatureReading>, ContractError> {
+        let page_size = page_size.min(100);
         let mut violations = Vec::new(&env);
+        let mut collected = 0u32;
+        let mut seen = 0u32;
+        let skip = page.saturating_mul(page_size);
+
         let mut page_num: u32 = 0;
-        
+
         loop {
             let page_len = storage::get_temp_page_len(&env, unit_id, page_num);
             if page_len == 0 && page_num > 0 {
                 break;
             }
             if page_len == 0 {
-                page_num = page_num.saturating_add(1); // Prevent overflow
+                page_num = page_num.saturating_add(1);
                 continue;
             }
 
-            let page = storage::get_temp_page(&env, unit_id, page_num);
+            let page_data = storage::get_temp_page(&env, unit_id, page_num);
             for i in 0..page_len {
-                let reading = page.get(i).unwrap_or_default();
+                let reading = page_data.get(i).unwrap_or_default();
                 if reading.is_violation {
-                    violations.push_back(reading);
+                    if seen >= skip && collected < page_size {
+                        violations.push_back(reading);
+                        collected = collected.saturating_add(1);
+                    }
+                    seen = seen.saturating_add(1);
+                    if collected >= page_size {
+                        return Ok(violations);
+                    }
                 }
             }
 
-            page_num = page_num.saturating_add(1); // Prevent overflow
+            page_num = page_num.saturating_add(1);
         }
 
         Ok(violations)
     }
 
-    /// Get all temperature readings for a blood unit
-    pub fn get_readings(env: Env, unit_id: u64) -> Result<Vec<TemperatureReading>, ContractError> {
+    /// Get all temperature readings for a blood unit (paginated)
+    pub fn get_readings(env: Env, unit_id: u64, page: u32, page_size: u32) -> Result<Vec<TemperatureReading>, ContractError> {
+        let page_size = page_size.min(100);
         let mut all_readings = Vec::new(&env);
+        let mut collected = 0u32;
+        let mut seen = 0u32;
+        let skip = page.saturating_mul(page_size);
 
         let mut page_num: u32 = 0;
         loop {
-            // Get the stored length for this page
             let page_len = storage::get_temp_page_len(&env, unit_id, page_num);
 
-            // If page_len is 0 and we've checked pages before, we're done
             if page_len == 0 && page_num > 0 {
                 break;
             }
 
-            // If no entries in this page yet, try next page
             if page_len == 0 {
-                page_num = page_num.saturating_add(1); // Prevent overflow
+                page_num = page_num.saturating_add(1);
                 continue;
             }
 
-            // Get the page
-            let page = storage::get_temp_page(&env, unit_id, page_num);
+            let page_data = storage::get_temp_page(&env, unit_id, page_num);
 
-            // Only iterate up to the stored length, not the full page size
             for i in 0..page_len {
-                let reading = page.get(i).unwrap_or_default();
-                all_readings.push_back(reading);
+                let reading = page_data.get(i).unwrap_or_default();
+                if seen >= skip && collected < page_size {
+                    all_readings.push_back(reading);
+                    collected = collected.saturating_add(1);
+                }
+                seen = seen.saturating_add(1);
+                if collected >= page_size {
+                    return Ok(all_readings);
+                }
             }
 
-            page_num = page_num.saturating_add(1); // Prevent overflow
+            page_num = page_num.saturating_add(1);
         }
 
         Ok(all_readings)
@@ -285,6 +467,7 @@ impl TemperatureContract {
         unit_id: u64,
     ) -> Result<(), ContractError> {
         admin.require_auth();
+        Self::require_not_paused(&env)?;
 
         let stored_admin = storage::get_admin(&env);
         if admin != stored_admin {
@@ -296,6 +479,106 @@ impl TemperatureContract {
 
         env.storage().persistent().set(&streak_key, &0u32);
         env.storage().persistent().set(&compromised_key, &false);
+
+        Ok(())
+    }
+
+    // ── Coordinator integration ────────────────────────────────────────────────
+
+    /// Configure the coordinator contract address. Admin only.
+    pub fn set_coordinator(
+        env: Env,
+        admin: Address,
+        coordinator: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(ContractError::Unauthorized);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::CoordinatorContract, &coordinator);
+        Ok(())
+    }
+
+    /// Whitelist an IoT oracle address that may call report_excursion_to_coordinator.
+    pub fn add_oracle(
+        env: Env,
+        admin: Address,
+        oracle: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(ContractError::Unauthorized);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::OracleWhitelist(oracle), &true);
+        Ok(())
+    }
+
+    /// Report a sustained temperature excursion to the coordinator contract,
+    /// which will transition the linked payment from Locked → Disputed.
+    ///
+    /// Only the admin or a whitelisted IoT oracle may call this function.
+    ///
+    /// # Arguments
+    /// * `caller`            - Admin or whitelisted oracle address
+    /// * `unit_id`           - Blood unit that experienced the excursion
+    /// * `payment_id`        - Payment ID to flag in the coordinator
+    /// * `excursion_summary` - Structured summary of the excursion
+    ///
+    /// # Errors
+    /// - `Unauthorized`          - Caller is not admin or whitelisted oracle
+    /// - `CoordinatorNotSet`     - Coordinator address not configured
+    /// - `CoordinatorCallFailed` - Cross-contract call to coordinator failed
+    pub fn report_excursion_to_coordinator(
+        env: Env,
+        caller: Address,
+        unit_id: u64,
+        payment_id: u64,
+        excursion_summary: ExcursionSummary,
+    ) -> Result<(), ContractError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Gate: caller must be admin or whitelisted oracle
+        let stored_admin = storage::get_admin(&env);
+        let is_admin = caller == stored_admin;
+        let is_oracle: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::OracleWhitelist(caller.clone()))
+            .unwrap_or(false);
+
+        if !is_admin && !is_oracle {
+            return Err(ContractError::Unauthorized);
+        }
+
+        // Verify unit has recorded violations before reporting
+        let violations = Self::get_violations(env.clone(), unit_id, 0, 1)?;
+        if violations.is_empty() {
+            return Err(ContractError::UnitNotFound);
+        }
+
+        let coordinator_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::CoordinatorContract)
+            .ok_or(ContractError::CoordinatorNotSet)?;
+
+        let coord_client = CoordinatorContractClient::new(&env, &coordinator_addr);
+        coord_client
+            .try_flag_temperature_breach(&caller, &payment_id, &excursion_summary)
+            .map_err(|_| ContractError::CoordinatorCallFailed)?
+            .map_err(|_| ContractError::CoordinatorCallFailed)?;
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("tmp_excur"),),
+            (unit_id, payment_id, excursion_summary.violation_count),
+        );
 
         Ok(())
     }
@@ -335,7 +618,7 @@ mod tests {
         }
 
         // Get violations
-        let violations = client.get_violations(&unit_id);
+        let violations = client.get_violations(&unit_id, &0u32, &100u32);
 
         // Should have zero violations since all logged readings are within threshold
         assert_eq!(violations.len(), 0, "Expected no violations but got {}", violations.len());
@@ -361,7 +644,7 @@ mod tests {
         client.log_reading(&unit_id, &100, &1020);
 
         // Get violations
-        let violations = client.get_violations(&unit_id);
+        let violations = client.get_violations(&unit_id, &0u32, &100u32);
 
         // Should have exactly 1 violation
         assert_eq!(violations.len(), 1, "Expected 1 violation but got {}", violations.len());
@@ -391,7 +674,7 @@ mod tests {
         }
 
         // Get violations
-        let violations = client.get_violations(&unit_id);
+        let violations = client.get_violations(&unit_id, &0u32, &100u32);
 
         // Should have exactly 5 violations (indices 9, 19, 29, 39, 49)
         assert_eq!(
@@ -432,7 +715,7 @@ mod tests {
         }
 
         // Get all readings
-        let readings = client.get_readings(&unit_id);
+        let readings = client.get_readings(&unit_id, &0u32, &100u32);
 
         // Should have exactly 21 readings, not 40 (2 pages)
         assert_eq!(
@@ -527,14 +810,12 @@ mod tests {
         let (_env, admin, client) = create_test_contract();
 
         let unit_id = 102u64;
-        client.set_threshold(&admin, &unit_id, &200, &600);
+        client.set_threshold(&admin, &unit_id, &0, &60_000_000);
 
-        // Log 50,000 readings at 450 (4.50°C)
-        // With i32 accumulator: sum would be 22,500,000 which exceeds i32::MAX (2,147,483,647)
-        // This would cause overflow and corrupt the average
-        // With i64 accumulator: sum is 22,500,000 which is well within i64 range
-        let test_temp = 450i32;
-        let num_readings = 50_000u64;
+        // Keep this small enough for CI while still proving the accumulator
+        // must be wider than i32: 30,000,000 * 100 = 3,000,000,000.
+        let test_temp = 30_000_000i32;
+        let num_readings = 100u64;
 
         for i in 0..num_readings {
             client.log_reading(&unit_id, &test_temp, &(1000 + i));
@@ -543,7 +824,7 @@ mod tests {
         let summary = client.get_temperature_summary(&unit_id);
         
         // Verify correct count
-        assert_eq!(summary.count, num_readings as u32, "Count should be 50,000");
+        assert_eq!(summary.count, num_readings as u32, "Count should be 100");
         
         // Verify average is correct (should be exactly 450)
         assert_eq!(
@@ -604,7 +885,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "UnitNotFound")]
+    #[should_panic(expected = "Error(Contract, #601)")]
     fn test_temperature_summary_no_readings() {
         let (_env, admin, client) = create_test_contract();
 
@@ -810,5 +1091,57 @@ mod tests {
         
         // Should definitely be compromised
         assert!(client.is_compromised(&unit_id), "Unit should be compromised after 100 violations");
+    }
+
+    // ── Circuit breaker tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_temperature_pause_blocks_log_reading() {
+        let (_env, admin, client) = create_test_contract();
+        let unit_id = 1u64;
+        client.set_threshold(&admin, &unit_id, &200, &600);
+
+        client.pause(&admin);
+        assert!(client.is_paused());
+
+        let result = client.try_log_reading(&unit_id, &400, &1000u64);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_temperature_pause_allows_get_readings() {
+        let (_env, admin, client) = create_test_contract();
+        let unit_id = 2u64;
+        client.set_threshold(&admin, &unit_id, &200, &600);
+        client.log_reading(&unit_id, &400, &1000u64);
+
+        client.pause(&admin);
+
+        // Read still works
+        let readings = client.get_readings(&unit_id);
+        assert!(!readings.is_empty());
+    }
+
+    #[test]
+    fn test_temperature_unpause_restores_writes() {
+        let (_env, admin, client) = create_test_contract();
+        let unit_id = 3u64;
+        client.set_threshold(&admin, &unit_id, &200, &600);
+
+        client.pause(&admin);
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+
+        client.log_reading(&unit_id, &400, &2000u64);
+        let readings = client.get_readings(&unit_id);
+        assert!(!readings.is_empty());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_temperature_non_admin_cannot_pause() {
+        let (env, _admin, client) = create_test_contract();
+        let attacker = Address::generate(&env);
+        client.pause(&attacker);
     }
 }

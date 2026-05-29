@@ -22,8 +22,19 @@ pub enum CoordinatorError {
     PaymentNotFound = 824,
     InvalidPaymentState = 825,
     DeliveryNotConfirmed = 826,
+    IncompatibleBloodType = 827,
 
     // Cross-contract call failures
     InventoryUpdateFailed = 830,
     PaymentUpdateFailed = 831,
+    PaymentFlagFailed = 832,
+
+    // Circuit breaker
+    ContractPaused = 840,
+
+    /// emergency_halt() has been called; all workflow mutations are blocked.
+    EmergencyHalted = 841,
+
+    /// expire_workflow() was called but the deadline has not yet elapsed.
+    WorkflowNotExpired = 842,
 }
