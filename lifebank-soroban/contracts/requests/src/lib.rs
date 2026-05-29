@@ -171,6 +171,7 @@ impl RequestContract {
     /// Create multiple blood requests in a single transaction.
     /// Each tuple is `(blood_type, component, quantity_ml, urgency, required_by_timestamp)`.
     /// Returns the Vec of new request IDs in input order.
+    /// Validates all items first, then writes all atomically.
     pub fn batch_create_requests(
         env: Env,
         hospital: Address,
@@ -183,12 +184,17 @@ impl RequestContract {
             return Err(ContractError::NotAuthorizedHospital);
         }
 
+        for i in 0..entries.len() {
+            let (_, _, quantity_ml, _, required_by_timestamp) =
+                entries.get(i).unwrap();
+            validation::validate_timestamp(&env, required_by_timestamp)?;
+            validation::validate_quantity(quantity_ml)?;
+        }
+
         let mut ids: soroban_sdk::Vec<u64> = soroban_sdk::Vec::new(&env);
         for i in 0..entries.len() {
             let (blood_type, component, quantity_ml, urgency, required_by_timestamp) =
                 entries.get(i).unwrap();
-            validation::validate_timestamp(&env, required_by_timestamp)?;
-            validation::validate_quantity(quantity_ml)?;
 
             let request_id = storage::increment_request_counter(&env);
             let request = BloodRequest {

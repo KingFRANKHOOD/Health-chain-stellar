@@ -22,6 +22,7 @@ pub enum CoordinatorError {
     PaymentNotFound = 824,
     InvalidPaymentState = 825,
     DeliveryNotConfirmed = 826,
+    IncompatibleBloodType = 827,
 
     // Cross-contract call failures
     InventoryUpdateFailed = 830,

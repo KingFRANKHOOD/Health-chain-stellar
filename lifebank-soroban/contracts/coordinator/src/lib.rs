@@ -26,6 +26,36 @@ use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, E
 
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BloodType {
+    APositive,
+    ANegative,
+    BPositive,
+    BNegative,
+    ABPositive,
+    ABNegative,
+    OPositive,
+    ONegative,
+}
+
+impl BloodType {
+    pub fn can_donate_to(&self, recipient: &BloodType) -> bool {
+        use BloodType::*;
+        match (self, recipient) {
+            (ONegative, _) => true,
+            (OPositive, APositive | BPositive | ABPositive | OPositive) => true,
+            (ANegative, APositive | ANegative | ABPositive | ABNegative) => true,
+            (APositive, APositive | ABPositive) => true,
+            (BNegative, BPositive | BNegative | ABPositive | ABNegative) => true,
+            (BPositive, BPositive | ABPositive) => true,
+            (ABNegative, ABPositive | ABNegative) => true,
+            (ABPositive, ABPositive) => true,
+            _ => false,
+        }
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequestStatus {
     Pending,
     Approved,
@@ -57,6 +87,7 @@ pub enum BloodStatus {
 pub struct BloodUnit {
     pub id: u64,
     pub status: BloodStatus,
+    pub blood_type: BloodType,
 }
 
 #[contracttype]
@@ -320,6 +351,7 @@ impl CoordinatorContract {
         unit_ids: Vec<u64>,
         payment_id: u64,
         caller: Address,
+        requested_blood_type: BloodType,
     ) -> Result<(), CoordinatorError> {
         caller.require_auth();
         Self::require_initialized(&env)?;
@@ -365,6 +397,10 @@ impl CoordinatorContract {
 
             if unit.status != BloodStatus::Available {
                 return Err(CoordinatorError::UnitNotAvailable);
+            }
+
+            if !unit.blood_type.can_donate_to(&requested_blood_type) {
+                return Err(CoordinatorError::IncompatibleBloodType);
             }
 
             inv_client

@@ -7,7 +7,7 @@ mod types;
 mod validation;
 
 use crate::error::ContractError;
-use crate::types::{is_valid_transition, BloodStatus, BloodType, BloodUnit, DataKey, Reservation};
+use crate::types::{is_valid_transition, BloodStatus, BloodType, BloodUnit, DataKey, Reservation, Role};
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Map, String, Vec};
 #[contract]
@@ -15,6 +15,7 @@ pub struct InventoryContract;
 
 #[contractimpl]
 impl InventoryContract {
+    const MAX_RESERVATION_DURATION_SECS: u64 = 86_400 * 7;
     /// Initialize the inventory contract
     ///
     /// # Arguments
@@ -85,6 +86,52 @@ impl InventoryContract {
     /// Check if a bank is authorized
     pub fn is_authorized_bank(env: Env, bank: Address) -> bool {
         storage::is_authorized_bank(&env, &bank)
+    }
+
+    /// Grant a role to an address. Admin only.
+    pub fn grant_role(env: Env, admin: Address, grantee: Address, role: Role) -> Result<(), ContractError> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(ContractError::Unauthorized);
+        }
+        env.storage().persistent().set(&DataKey::Role(grantee), &role);
+        Ok(())
+    }
+
+    /// Get the role of an address. Returns Admin if address is contract admin, otherwise retrieves stored role.
+    fn get_role(env: &Env, address: &Address) -> Role {
+        let admin = storage::get_admin(env);
+        if address == &admin {
+            Role::Admin
+        } else {
+            env.storage()
+                .persistent()
+                .get(&DataKey::Role(address.clone()))
+                .unwrap_or(Role::BloodBank)
+        }
+    }
+
+    /// Validate that a role can transition a blood unit to the new status.
+    fn assert_can_transition(role: &Role, new_status: &BloodStatus) -> Result<(), ContractError> {
+        match role {
+            Role::Admin => Ok(()),
+            Role::Rider => {
+                if *new_status == BloodStatus::InTransit {
+                    Ok(())
+                } else {
+                    Err(ContractError::InsufficientRolePermission)
+                }
+            }
+            Role::Hospital => {
+                if *new_status == BloodStatus::Delivered {
+                    Ok(())
+                } else {
+                    Err(ContractError::InsufficientRolePermission)
+                }
+            }
+            Role::BloodBank => Ok(()),
+        }
     }
 
     fn require_not_paused(env: &Env) -> Result<(), ContractError> {
@@ -269,8 +316,11 @@ impl InventoryContract {
         let blood_unit =
             storage::get_blood_unit(&env, unit_id).ok_or(ContractError::NotFound)?;
 
+        let role = Self::get_role(&env, &authorized_by);
+        Self::assert_can_transition(&role, &new_status)?;
+
         let admin = storage::get_admin(&env);
-        if authorized_by != admin && authorized_by != blood_unit.bank_id {
+        if role != Role::Admin && authorized_by != blood_unit.bank_id {
             return Err(ContractError::Unauthorized);
         }
 
@@ -556,11 +606,15 @@ impl InventoryContract {
 
         let current_time = env.ledger().timestamp();
 
+        if duration_seconds > Self::MAX_RESERVATION_DURATION_SECS {
+            panic!("duration_seconds exceeds maximum");
+        }
+
         // Validate all units before making any changes (all-or-nothing)
         for i in 0..unit_ids.len() {
             let unit_id = unit_ids.get(i).ok_or(ContractError::NotFound)?;
             let unit = storage::get_blood_unit(&env, unit_id).ok_or(ContractError::NotFound)?;
-            
+
             // Explicit ownership check: prove that every selected unit belongs to the blood bank performing the action.
             if unit.bank_id != requester {
                 return Err(ContractError::NotUnitOwner);
@@ -575,7 +629,9 @@ impl InventoryContract {
         }
 
         let reservation_id = storage::increment_reservation_id(&env);
-        let expiration = current_time + duration_seconds;
+        let expiration = current_time
+            .checked_add(duration_seconds)
+            .expect("timestamp overflow");
 
         let reservation = Reservation {
             unit_ids: unit_ids.clone(),
