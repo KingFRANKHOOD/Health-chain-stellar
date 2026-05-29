@@ -5,10 +5,11 @@ mod storage;
 mod types;
 
 use crate::error::ContractError;
-use crate::types::{DataKey, TemperatureReading, TemperatureSummary, TemperatureThreshold};
-use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
+use crate::types::{DataKey, PendingThresholdChange, TemperatureReading, TemperatureSummary, TemperatureThreshold};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, Vec};
 
 const PAGE_SIZE: u32 = 20;
+const GOVERNANCE_DELAY_SECONDS: u64 = 7 * 24 * 60 * 60; // 7 days
 
 #[contract]
 pub struct TemperatureContract;
@@ -26,6 +27,116 @@ impl TemperatureContract {
         Ok(())
     }
 
+    /// Propose a threshold change with time-lock governance
+    ///
+    /// This function initiates a 7-day delay before the threshold can be applied.
+    /// The delay provides transparency and allows stakeholders to review parameter changes.
+    ///
+    /// # Arguments
+    /// * `admin` - Admin address proposing the change
+    /// * `unit_id` - Blood unit ID for which to change the threshold
+    /// * `min_celsius_x100` - New minimum temperature threshold
+    /// * `max_celsius_x100` - New maximum temperature threshold
+    ///
+    /// # Errors
+    /// - `Unauthorized`: Caller is not the admin
+    /// - `InvalidThreshold`: Min >= Max
+    pub fn propose_threshold_change(
+        env: Env,
+        admin: Address,
+        unit_id: u64,
+        min_celsius_x100: i32,
+        max_celsius_x100: i32,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+
+        let stored_admin = storage::get_admin(&env);
+        if admin != stored_admin {
+            return Err(ContractError::Unauthorized);
+        }
+
+        if min_celsius_x100 >= max_celsius_x100 {
+            return Err(ContractError::InvalidThreshold);
+        }
+
+        let effective_at = env.ledger().timestamp() + GOVERNANCE_DELAY_SECONDS;
+        let pending_change = PendingThresholdChange {
+            unit_id,
+            new_min_celsius_x100: min_celsius_x100,
+            new_max_celsius_x100: max_celsius_x100,
+            effective_at,
+            proposed_by: admin.clone(),
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingThresholdChange(unit_id), &pending_change);
+
+        // Emit event for transparency
+        env.events().publish(
+            (symbol_short!("threshold"), symbol_short!("proposed")),
+            (unit_id, min_celsius_x100, max_celsius_x100, effective_at),
+        );
+
+        Ok(())
+    }
+
+    /// Apply a pending threshold change after the time-lock period
+    ///
+    /// Can be called by anyone once the delay period has passed.
+    ///
+    /// # Arguments
+    /// * `unit_id` - Blood unit ID for which to apply the threshold change
+    ///
+    /// # Errors
+    /// - `NoPendingChange`: No pending change exists for this unit
+    /// - `ChangeNotReady`: Time-lock period has not elapsed yet
+    pub fn apply_threshold_change(env: Env, unit_id: u64) -> Result<(), ContractError> {
+        let pending_change: PendingThresholdChange = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingThresholdChange(unit_id))
+            .ok_or(ContractError::NoPendingChange)?;
+
+        let current_time = env.ledger().timestamp();
+        if current_time < pending_change.effective_at {
+            return Err(ContractError::ChangeNotReady);
+        }
+
+        // Apply the threshold change
+        let threshold = TemperatureThreshold {
+            min_celsius_x100: pending_change.new_min_celsius_x100,
+            max_celsius_x100: pending_change.new_max_celsius_x100,
+        };
+        storage::set_threshold(&env, unit_id, &threshold);
+
+        // Remove the pending change
+        env.storage()
+            .persistent()
+            .remove(&DataKey::PendingThresholdChange(unit_id));
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("threshold"), symbol_short!("applied")),
+            (unit_id, threshold.min_celsius_x100, threshold.max_celsius_x100),
+        );
+
+        Ok(())
+    }
+
+    /// Get pending threshold change for a unit (if any)
+    pub fn get_pending_threshold_change(
+        env: Env,
+        unit_id: u64,
+    ) -> Option<PendingThresholdChange> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PendingThresholdChange(unit_id))
+    }
+
+    /// Set threshold immediately (legacy method - kept for backward compatibility)
+    ///
+    /// WARNING: This bypasses governance. Consider using propose_threshold_change instead.
     pub fn set_threshold(
         env: Env,
         admin: Address,

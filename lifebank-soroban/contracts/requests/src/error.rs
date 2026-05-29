@@ -11,4 +11,8 @@ pub enum ContractError {
     InvalidQuantity = 304,
     NotAuthorizedHospital = 305,
     RequestNotFound = 306,
+    UnauthorizedStatusTransition = 307,
+    InvalidStatusTransition = 308,
+    NotAuthorizedBloodBank = 309,
+    NotAuthorizedRider = 310,
 }

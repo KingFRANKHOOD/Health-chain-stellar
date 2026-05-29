@@ -60,6 +60,34 @@ impl RequestContract {
         Ok(())
     }
 
+    pub fn authorize_blood_bank(env: Env, blood_bank: Address) -> Result<(), ContractError> {
+        storage::require_initialized(&env)?;
+        storage::get_admin(&env).require_auth();
+        storage::authorize_blood_bank(&env, &blood_bank);
+        Ok(())
+    }
+
+    pub fn revoke_blood_bank(env: Env, blood_bank: Address) -> Result<(), ContractError> {
+        storage::require_initialized(&env)?;
+        storage::get_admin(&env).require_auth();
+        storage::revoke_blood_bank(&env, &blood_bank);
+        Ok(())
+    }
+
+    pub fn authorize_rider(env: Env, rider: Address) -> Result<(), ContractError> {
+        storage::require_initialized(&env)?;
+        storage::get_admin(&env).require_auth();
+        storage::authorize_rider(&env, &rider);
+        Ok(())
+    }
+
+    pub fn revoke_rider(env: Env, rider: Address) -> Result<(), ContractError> {
+        storage::require_initialized(&env)?;
+        storage::get_admin(&env).require_auth();
+        storage::revoke_rider(&env, &rider);
+        Ok(())
+    }
+
     pub fn create_request(
         env: Env,
         hospital: Address,
@@ -131,5 +159,79 @@ impl RequestContract {
 
     pub fn is_initialized(env: Env) -> bool {
         storage::is_initialized(&env)
+    }
+
+    /// Update request status with role-based access control
+    ///
+    /// Only specific roles can perform specific status transitions:
+    /// - BloodBank: Pending → InProgress (marking request as being processed)
+    /// - Rider: InProgress → InTransit (marking request as in delivery)
+    /// - Hospital: InTransit → Fulfilled (confirming delivery received)
+    /// - Hospital: Pending → Cancelled (cancelling their own request)
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `caller` - Address performing the status update (must be authenticated)
+    /// * `request_id` - ID of the request to update
+    /// * `new_status` - New status to set
+    ///
+    /// # Errors
+    /// - `RequestNotFound`: Request with given ID doesn't exist
+    /// - `UnauthorizedStatusTransition`: Caller's role doesn't allow this transition
+    /// - `InvalidStatusTransition`: The status transition itself is not valid
+    pub fn update_request_status(
+        env: Env,
+        caller: Address,
+        request_id: u64,
+        new_status: RequestStatus,
+    ) -> Result<BloodRequest, ContractError> {
+        caller.require_auth();
+        storage::require_initialized(&env)?;
+
+        let mut request = storage::get_request(&env, request_id)
+            .ok_or(ContractError::RequestNotFound)?;
+
+        let current_status = request.status;
+
+        // Determine caller's role
+        let caller_role = if storage::is_hospital_authorized(&env, &caller) {
+            types::Role::Hospital
+        } else if storage::is_blood_bank_authorized(&env, &caller) {
+            types::Role::BloodBank
+        } else if storage::is_rider_authorized(&env, &caller) {
+            types::Role::Rider
+        } else {
+            return Err(ContractError::Unauthorized);
+        };
+
+        // Validate role-based status transitions
+        use types::{RequestStatus::*, Role};
+        let is_authorized = matches!(
+            (caller_role, &current_status, &new_status),
+            (Role::BloodBank, Pending, Approved)
+                | (Role::Rider, Approved, Fulfilled)
+                | (Role::Hospital, Fulfilled, Fulfilled)
+                | (Role::Hospital, Pending, Cancelled)
+        );
+
+        if !is_authorized {
+            return Err(ContractError::UnauthorizedStatusTransition);
+        }
+
+        // Update the request
+        request.status = new_status;
+        storage::set_request(&env, &request);
+
+        events::emit_status_updated(&env, request_id, current_status, new_status, &caller);
+
+        Ok(request)
+    }
+
+    pub fn is_blood_bank_authorized(env: Env, blood_bank: Address) -> bool {
+        storage::is_blood_bank_authorized(&env, &blood_bank)
+    }
+
+    pub fn is_rider_authorized(env: Env, rider: Address) -> bool {
+        storage::is_rider_authorized(&env, &rider)
     }
 }

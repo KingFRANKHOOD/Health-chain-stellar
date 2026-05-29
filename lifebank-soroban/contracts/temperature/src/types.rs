@@ -1,4 +1,4 @@
-use soroban_sdk::contracttype;
+use soroban_sdk::{contracttype, Address};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
@@ -36,6 +36,16 @@ pub struct TemperatureSummary {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingThresholdChange {
+    pub unit_id: u64,
+    pub new_min_celsius_x100: i32,
+    pub new_max_celsius_x100: i32,
+    pub effective_at: u64,
+    pub proposed_by: Address,
+}
+
+#[contracttype]
 #[derive(Clone, Eq, PartialEq)]
 pub enum DataKey {
     Admin,
@@ -46,4 +56,6 @@ pub enum DataKey {
     ConsecutiveViolationStreak(u64),
     /// Tracks if unit has been compromised (3+ consecutive violations)
     IsCompromised(u64),
+    /// Pending threshold change with time-lock (governance)
+    PendingThresholdChange(u64),
 }

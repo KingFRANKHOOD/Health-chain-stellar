@@ -82,10 +82,13 @@ impl InventoryContract {
             return Err(ContractError::NotAuthorizedBloodBank);
         }
 
-        // 4. Validate quantity
+        // 4. Validate blood type
+        validation::validate_blood_type(blood_type)?;
+
+        // 5. Validate quantity
         validation::validate_quantity(quantity_ml)?;
 
-        // 5. Generate unique blood unit ID using atomic counter increment.
+        // 6. Generate unique blood unit ID using atomic counter increment.
         //
         // Soroban Transaction Ordering Model:
         // Within a single ledger close, transactions are ordered deterministically.
@@ -110,7 +113,7 @@ impl InventoryContract {
             return Err(ContractError::DuplicateBloodUnit);
         }
 
-        // 6. Compute timestamps from ledger time.
+        // 7. Compute timestamps from ledger time.
         // Using ledger time for both donation and expiration guarantees that
         // expiration checks (which compare against env.ledger().timestamp())
         // are always consistent with the stored values.
@@ -130,19 +133,19 @@ impl InventoryContract {
             metadata: Map::new(&env),
         };
 
-        // 7. Validate the complete blood unit
+        // 8. Validate the complete blood unit
         blood_unit.validate(current_time)?;
 
-        // 8. Store blood unit — only reaches here if the ID slot was empty.
+        // 9. Store blood unit — only reaches here if the ID slot was empty.
         storage::set_blood_unit(&env, &blood_unit);
 
-        // 9. Update indexes for efficient querying
+        // 10. Update indexes for efficient querying
         storage::add_to_blood_type_index(&env, &blood_unit);
         storage::add_to_bank_index(&env, &blood_unit);
         storage::add_to_status_index(&env, &blood_unit);
         storage::add_to_donor_index(&env, &blood_unit);
 
-        // 10. Emit event
+        // 11. Emit event
         events::emit_blood_registered(
             &env,
             blood_unit_id,
@@ -152,7 +155,7 @@ impl InventoryContract {
             expiration_timestamp,
         );
 
-        // 11. Return blood unit ID
+        // 12. Return blood unit ID
         Ok(blood_unit_id)
     }
 

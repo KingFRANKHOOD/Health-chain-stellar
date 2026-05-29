@@ -1,4 +1,4 @@
-use crate::types::{BloodRequest, RequestCreatedEvent};
+use crate::types::{BloodRequest, RequestCreatedEvent, RequestStatus};
 use soroban_sdk::{Address, Env, Symbol};
 
 pub fn emit_initialized(env: &Env, admin: &Address, inventory_contract: &Address) {
@@ -19,5 +19,18 @@ pub fn emit_request_created(env: &Env, request: &BloodRequest) {
             urgency: request.urgency.priority(),
             timestamp: request.created_timestamp,
         },
+    );
+}
+
+pub fn emit_status_updated(
+    env: &Env,
+    request_id: u64,
+    old_status: RequestStatus,
+    new_status: RequestStatus,
+    updated_by: &Address,
+) {
+    env.events().publish(
+        (Symbol::new(env, "status_updated"), request_id),
+        (old_status, new_status, updated_by.clone()),
     );
 }
