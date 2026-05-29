@@ -390,6 +390,7 @@ impl CoordinatorContract {
                 unit_ids,
                 status: WorkflowStatus::Allocated,
                 delivery_confirmed: false,
+                delivery_location: None,
             },
         );
 
@@ -397,10 +398,16 @@ impl CoordinatorContract {
     }
 
     /// Step 2 – Confirm delivery: mark all reserved units as Delivered.
+    ///
+    /// `location` must be a GPS coordinate or facility identifier supplied by
+    /// the confirmer.  It is stored in the workflow record and emitted in the
+    /// event so off-chain auditors and cold-chain compliance tooling can verify
+    /// where delivery occurred.
     pub fn confirm_delivery(
         env: Env,
         request_id: u64,
         caller: Address,
+        location: String,
     ) -> Result<(), CoordinatorError> {
         caller.require_auth();
         Self::require_initialized(&env)?;
@@ -420,7 +427,6 @@ impl CoordinatorContract {
             .unwrap();
         let inv_client = InventoryContractClient::new(&env, &inv_addr);
         let inv_admin = inv_client.get_admin();
-        let location = soroban_sdk::String::from_str(&env, "delivered");
 
         for i in 0..wf.unit_ids.len() {
             let uid = wf.unit_ids.get(i).unwrap();
@@ -437,6 +443,7 @@ impl CoordinatorContract {
 
         wf.status = WorkflowStatus::Delivered;
         wf.delivery_confirmed = true;
+        wf.delivery_location = Some(location.clone());
         save_workflow(&env, &wf);
 
         env.events().publish(
@@ -445,7 +452,7 @@ impl CoordinatorContract {
                 symbol_short!("dlvrd"),
                 symbol_short!("v1"),
             ),
-            request_id,
+            (request_id, location),
         );
 
         Ok(())
@@ -526,7 +533,10 @@ impl CoordinatorContract {
 
         for i in 0..wf.unit_ids.len() {
             let uid = wf.unit_ids.get(i).unwrap();
-            let _ = inv_client.try_update_status(&uid, &BloodStatus::Available, &inv_admin, &None);
+            inv_client
+                .try_update_status(&uid, &BloodStatus::Available, &inv_admin, &None)
+                .map_err(|_| CoordinatorError::InventoryUpdateFailed)?
+                .map_err(|_| CoordinatorError::InventoryUpdateFailed)?;
         }
 
         let pay_addr: Address = env
@@ -535,10 +545,15 @@ impl CoordinatorContract {
             .get(&DataKey::PaymentContract)
             .unwrap();
         let pay_client = PaymentContractClient::new(&env, &pay_addr);
-        if let Ok(Ok(payment)) = pay_client.try_get_payment(&wf.payment_id) {
-            if payment.status == PaymentStatus::Locked {
-                let _ = pay_client.try_update_status(&wf.payment_id, &PaymentStatus::Refunded);
-            }
+        let payment = pay_client
+            .try_get_payment(&wf.payment_id)
+            .map_err(|_| CoordinatorError::PaymentNotFound)?
+            .map_err(|_| CoordinatorError::PaymentNotFound)?;
+        if payment.status == PaymentStatus::Locked {
+            pay_client
+                .try_update_status(&wf.payment_id, &PaymentStatus::Refunded)
+                .map_err(|_| CoordinatorError::PaymentUpdateFailed)?
+                .map_err(|_| CoordinatorError::PaymentUpdateFailed)?;
         }
 
         wf.status = WorkflowStatus::RolledBack;

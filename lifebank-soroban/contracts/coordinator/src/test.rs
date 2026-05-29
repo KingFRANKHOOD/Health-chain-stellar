@@ -241,11 +241,12 @@ fn test_full_happy_path() {
     let unit = MockInventoryContractClient::new(&h.env, &h.inv_id).get_blood_unit(&unit_id);
     assert_eq!(unit.status, BloodStatus::Reserved);
 
-    h.coord.confirm_delivery(&1u64, &h.admin);
+    h.coord.confirm_delivery(&1u64, &h.admin, &String::from_str(&h.env, "Hospital-A-GPS"));
 
     let wf = h.coord.get_workflow(&1u64);
     assert_eq!(wf.status, WorkflowStatus::Delivered);
     assert!(wf.delivery_confirmed);
+    assert_eq!(wf.delivery_location, Some(String::from_str(&h.env, "Hospital-A-GPS")));
 
     let unit = MockInventoryContractClient::new(&h.env, &h.inv_id).get_blood_unit(&unit_id);
     assert_eq!(unit.status, BloodStatus::Delivered);
@@ -326,7 +327,7 @@ fn test_settle_blocked_for_pending_payment() {
         .create_payment(&1u64, &PaymentStatus::Pending);
 
     h.coord.allocate_units(&1u64, &vec![&h.env, unit_id], &payment_id, &h.admin);
-    h.coord.confirm_delivery(&1u64, &h.admin);
+    h.coord.confirm_delivery(&1u64, &h.admin, &String::from_str(&h.env, "Hospital-A-GPS"));
 
     let result = h.coord.try_settle_payment(&1u64, &h.admin);
     assert_eq!(result, Err(Ok(CoordinatorError::InvalidPaymentState)));
@@ -335,7 +336,7 @@ fn test_settle_blocked_for_pending_payment() {
 #[test]
 fn test_confirm_delivery_blocked_before_allocation() {
     let h = setup();
-    let result = h.coord.try_confirm_delivery(&99u64, &h.admin);
+    let result = h.coord.try_confirm_delivery(&99u64, &h.admin, &String::from_str(&h.env, "Hospital-A-GPS"));
     assert_eq!(result, Err(Ok(CoordinatorError::WorkflowNotFound)));
 }
 
@@ -387,7 +388,7 @@ fn test_rollback_blocked_after_settlement() {
     let payment_id = create_locked_payment(&h, 1);
 
     h.coord.allocate_units(&1u64, &vec![&h.env, unit_id], &payment_id, &h.admin);
-    h.coord.confirm_delivery(&1u64, &h.admin);
+    h.coord.confirm_delivery(&1u64, &h.admin, &String::from_str(&h.env, "Hospital-A-GPS"));
     h.coord.settle_payment(&1u64, &h.admin);
 
     let result = h.coord.try_rollback(&1u64);

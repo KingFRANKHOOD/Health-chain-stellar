@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Vec};
+use soroban_sdk::{contracttype, String, Vec};
 
 /// Canonical workflow states — shared identifier across all contracts.
 #[contracttype]
@@ -29,6 +29,9 @@ pub struct WorkflowRecord {
     pub unit_ids: Vec<u64>,
     pub status: WorkflowStatus,
     pub delivery_confirmed: bool,
+    /// Geographic location or identifier supplied by the confirmer at delivery.
+    /// None until confirm_delivery() is called.
+    pub delivery_location: Option<String>,
 }
 
 /// Summary of a sustained temperature excursion (mirrors temperature contract type).

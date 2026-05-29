@@ -152,6 +152,12 @@ const DEFAULT_DISPUTE_TIMEOUT_SECS: u64 = 7 * 24 * 3600;
 /// Instance storage key for the dispute timeout override.
 const DISPUTE_TIMEOUT: soroban_sdk::Symbol = symbol_short!("DISP_TO");
 
+/// Persistent storage TTL constants (in ledgers; one ledger ≈ 5 s).
+/// Entries are bumped to PERSISTENT_BUMP_TO whenever their remaining TTL
+/// falls below PERSISTENT_BUMP_THRESHOLD, preventing silent expiry.
+const PERSISTENT_BUMP_THRESHOLD: u32 = 518_400; // ~30 days
+const PERSISTENT_BUMP_TO: u32 = 1_036_800; // ~60 days
+
 fn payment_key(id: u64) -> (u64, &'static str) {
     (id, "pay")
 }
@@ -247,6 +253,9 @@ fn index_by_payer(env: &Env, payer: &Address, id: u64) {
         .unwrap_or(Vec::new(env));
     ids.push_back(id);
     env.storage().persistent().set(&key, &ids);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_BUMP_THRESHOLD, PERSISTENT_BUMP_TO);
 }
 
 fn index_by_payee(env: &Env, payee: &Address, id: u64) {
@@ -258,6 +267,9 @@ fn index_by_payee(env: &Env, payee: &Address, id: u64) {
         .unwrap_or(Vec::new(env));
     ids.push_back(id);
     env.storage().persistent().set(&key, &ids);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_BUMP_THRESHOLD, PERSISTENT_BUMP_TO);
 }
 
 fn index_by_status(env: &Env, status: PaymentStatus, id: u64) {
@@ -269,6 +281,9 @@ fn index_by_status(env: &Env, status: PaymentStatus, id: u64) {
         .unwrap_or(Vec::new(env));
     ids.push_back(id);
     env.storage().persistent().set(&key, &ids);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_BUMP_THRESHOLD, PERSISTENT_BUMP_TO);
 }
 
 fn req_idx_key(request_id: u64) -> (u64, &'static str) {
@@ -289,6 +304,29 @@ fn remove_from_request_index(env: &Env, request_id: u64) {
     env.storage()
         .persistent()
         .remove(&req_idx_key(request_id));
+}
+
+/// Persistent key for the ordered list of payment IDs associated with a request.
+/// Separate from req_idx_key (which maps request → current active payment).
+fn request_timeline_key(request_id: u64) -> (u64, &'static str) {
+    (request_id, "rt")
+}
+
+/// Append `payment_id` to the per-request timeline index.
+/// The list is insertion-ordered; no sort is needed on read because payments
+/// for a given request are appended in creation order.
+fn timeline_append(env: &Env, request_id: u64, payment_id: u64) {
+    let key = request_timeline_key(request_id);
+    let mut ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(Vec::new(env));
+    ids.push_back(payment_id);
+    env.storage().persistent().set(&key, &ids);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_BUMP_THRESHOLD, PERSISTENT_BUMP_TO);
 }
 
 /// Remove `id` from the persistent Vec stored under the given status index key.
@@ -554,6 +592,7 @@ impl PaymentContract {
         index_by_payee(&env, &payee, id);
         index_by_status(&env, PaymentStatus::Pending, id);
         index_by_request(&env, request_id, id);
+        timeline_append(&env, request_id, id);
 
         env.events().publish(
             (
@@ -640,6 +679,7 @@ impl PaymentContract {
         index_by_payee(&env, &payee, id);
         index_by_status(&env, PaymentStatus::Locked, id);
         index_by_request(&env, request_id, id);
+        timeline_append(&env, request_id, id);
         update_stats_on_transition(&env, amount, PaymentStatus::Pending, PaymentStatus::Locked);
 
         env.events().publish(
@@ -869,44 +909,36 @@ impl PaymentContract {
         load_stats(&env)
     }
 
-    pub fn get_payment_timeline(env: Env, page: u32, page_size: u32) -> PaymentPage {
-        let page_size = if page_size == 0 { 20 } else { page_size };
-        let total = get_counter(&env);
-
-        let mut all: Vec<Payment> = Vec::new(&env);
-        for id in 1..=total {
-            if let Some(p) = load_payment(&env, id) {
-                all.push_back(p);
-            }
-        }
-
-        let len = all.len();
-        for i in 0..len {
-            for j in 0..len.saturating_sub(i + 1) {
-                let current = all.get(j).unwrap();
-                let next = all.get(j + 1).unwrap();
-                if current.created_at > next.created_at {
-                    all.set(j, next);
-                    all.set(j + 1, current);
-                }
-            }
-        }
-
-        let start = (page as u64) * (page_size as u64);
-        let end = (start + page_size as u64).min(total);
+    /// Returns the ordered payment history for a specific request.
+    ///
+    /// Uses the per-request timeline index written at payment creation — no
+    /// full scan and no sort on the read path.  `offset` is a zero-based item
+    /// index; `limit` caps the number of items returned (clamped to 100).
+    pub fn get_payment_timeline(
+        env: Env,
+        request_id: u64,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<Payment> {
+        let limit = limit.min(100).max(1);
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&request_timeline_key(request_id))
+            .unwrap_or(Vec::new(&env));
+        let total = ids.len();
+        let start = offset;
+        let end = (start + limit).min(total);
         let mut items: Vec<Payment> = Vec::new(&env);
         if start < total {
             for i in start..end {
-                items.push_back(all.get(i as u32).unwrap());
+                let id = ids.get(i).unwrap();
+                if let Some(p) = load_payment(&env, id) {
+                    items.push_back(p);
+                }
             }
         }
-
-        PaymentPage {
-            items,
-            total,
-            page,
-            page_size,
-        }
+        items
     }
 
     pub fn get_payment_count(env: Env) -> u64 {

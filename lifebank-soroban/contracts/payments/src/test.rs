@@ -412,69 +412,59 @@ fn test_statistics_ignores_pending_cancelled_disputed() {
 
 // ── get_payment_timeline ───────────────────────────────────────────────────────
 
+/// Timeline is per-request and insertion-ordered (no sort on read path).
 #[test]
-fn test_timeline_returns_payments_in_chronological_order() {
+fn test_timeline_returns_payment_for_request() {
     let (env, cid) = setup();
     let client = PaymentContractClient::new(&env, &cid);
-
-    env.ledger().with_mut(|l| l.timestamp = 3000);
-    make_payment(&env, &client, 1, 100);
 
     env.ledger().with_mut(|l| l.timestamp = 1000);
+    make_payment(&env, &client, 1, 100);
+    env.ledger().with_mut(|l| l.timestamp = 2000);
     make_payment(&env, &client, 2, 200);
 
-    env.ledger().with_mut(|l| l.timestamp = 2000);
-    make_payment(&env, &client, 3, 300);
+    let items = client.get_payment_timeline(&1u64, &0u32, &20u32);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items.get(0).unwrap().request_id, 1);
+    assert_eq!(items.get(0).unwrap().created_at, 1000);
 
-    let page = client.get_payment_timeline(&0u32, &20u32);
-    assert_eq!(page.items.len(), 3);
-    assert_eq!(page.items.get(0).unwrap().created_at, 1000);
-    assert_eq!(page.items.get(1).unwrap().created_at, 2000);
-    assert_eq!(page.items.get(2).unwrap().created_at, 3000);
+    let items2 = client.get_payment_timeline(&2u64, &0u32, &20u32);
+    assert_eq!(items2.len(), 1);
+    assert_eq!(items2.get(0).unwrap().request_id, 2);
 }
 
+/// offset and limit slice the per-request Vec without loading uninvolved payments.
 #[test]
-fn test_timeline_pagination() {
+fn test_timeline_offset_limit() {
     let (env, cid) = setup();
     let client = PaymentContractClient::new(&env, &cid);
 
-    for i in 1u64..=5 {
-        env.ledger().with_mut(|l| l.timestamp = i * 1000);
-        make_payment(&env, &client, i, 100);
-    }
+    // Only one payment per request is allowed; test offset beyond the single item.
+    make_payment(&env, &client, 10, 500);
 
-    let page0 = client.get_payment_timeline(&0u32, &2u32);
-    assert_eq!(page0.items.len(), 2);
-    assert_eq!(page0.total, 5);
-    assert_eq!(page0.items.get(0).unwrap().created_at, 1000);
+    let first = client.get_payment_timeline(&10u64, &0u32, &5u32);
+    assert_eq!(first.len(), 1);
 
-    let page1 = client.get_payment_timeline(&1u32, &2u32);
-    assert_eq!(page1.items.len(), 2);
-    assert_eq!(page1.items.get(0).unwrap().created_at, 3000);
-
-    let page2 = client.get_payment_timeline(&2u32, &2u32);
-    assert_eq!(page2.items.len(), 1);
-    assert_eq!(page2.items.get(0).unwrap().created_at, 5000);
+    let empty = client.get_payment_timeline(&10u64, &1u32, &5u32);
+    assert_eq!(empty.len(), 0);
 }
 
 #[test]
-fn test_timeline_empty_when_no_payments() {
+fn test_timeline_empty_when_no_payments_for_request() {
     let (env, cid) = setup();
     let client = PaymentContractClient::new(&env, &cid);
-    let page = client.get_payment_timeline(&0u32, &20u32);
-    assert_eq!(page.items.len(), 0);
-    assert_eq!(page.total, 0);
+    let items = client.get_payment_timeline(&99u64, &0u32, &20u32);
+    assert_eq!(items.len(), 0);
 }
 
 #[test]
-fn test_timeline_out_of_range_page_returns_empty() {
+fn test_timeline_unknown_request_returns_empty() {
     let (env, cid) = setup();
     let client = PaymentContractClient::new(&env, &cid);
     make_payment(&env, &client, 1, 100);
 
-    let page = client.get_payment_timeline(&99u32, &20u32);
-    assert_eq!(page.items.len(), 0);
-    assert_eq!(page.total, 1);
+    let items = client.get_payment_timeline(&999u64, &0u32, &20u32);
+    assert_eq!(items.len(), 0);
 }
 
 // ── update_status ──────────────────────────────────────────────────────────────
