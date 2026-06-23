@@ -1,36 +1,35 @@
 import { BullModule } from '@nestjs/bullmq';
-import { Module, forwardRef } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { BlockchainModule } from '../blockchain/blockchain.module';
 import { CompensationModule } from '../common/compensation/compensation.module';
-import { InventoryModule } from '../inventory/inventory.module';
-import { NotificationsModule } from '../notifications/notifications.module';
-import { MapsModule } from '../maps/maps.module';
 import { EscalationModule } from '../escalation/escalation.module';
+import { InventoryStockEntity } from '../inventory/entities/inventory-stock.entity';
+import { InventoryModule } from '../inventory/inventory.module';
+import { MapsModule } from '../maps/maps.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { OrganizationEntity } from '../organizations/entities/organization.entity';
-import { ReportingModule } from '../reporting/reporting.module';
 
 import { BloodRequestsController } from './blood-requests.controller';
 import { BloodRequestsService } from './blood-requests.service';
 import { RequestQueryController } from './controllers/request-query.controller';
 import { BloodRequestItemEntity } from './entities/blood-request-item.entity';
-import { BloodRequestEntity } from './entities/blood-request.entity';
 import { BloodRequestReservationEntity } from './entities/blood-request-reservation.entity';
+import { BloodRequestSagaEntity } from './entities/blood-request-saga.entity';
+import { BloodRequestEntity } from './entities/blood-request.entity';
+import { RequestStatusHistoryEntity } from './entities/request-status-history.entity';
 import { BLOOD_REQUEST_QUEUE } from './enums/request-urgency.enum';
 import { SlaBreachListener } from './listeners/sla-breach.listener';
 import { BloodRequestProcessor } from './processors/blood-request.processor';
-import { RequestQueryService } from './services/request-query.service';
 import { BloodBankAvailabilityService } from './services/blood-bank-availability.service';
-import { BloodRequestReservationService } from './services/blood-request-reservation.service';
-import { TriageScoringService } from './services/triage-scoring.service';
-import { InventoryStockEntity } from '../inventory/entities/inventory-stock.entity';
-
 import { BloodRequestChainService } from './services/blood-request-chain.service';
 import { BloodRequestEmailService } from './services/blood-request-email.service';
+import { BloodRequestReservationService } from './services/blood-request-reservation.service';
+import { RequestQueryService } from './services/request-query.service';
 import { SagaCoordinatorService } from './services/saga-coordinator.service';
-import { BloodRequestSagaEntity } from './entities/blood-request-saga.entity';
+import { TriageScoringService } from './services/triage-scoring.service';
 
 @Module({
   imports: [
@@ -39,6 +38,7 @@ import { BloodRequestSagaEntity } from './entities/blood-request-saga.entity';
       BloodRequestItemEntity,
       BloodRequestReservationEntity,
       BloodRequestSagaEntity,
+      RequestStatusHistoryEntity,
       InventoryStockEntity,
       OrganizationEntity,
     ]),
