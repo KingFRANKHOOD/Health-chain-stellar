@@ -2230,10 +2230,10 @@ pub(crate) fn append_to_custody_trail(env: &Env, unit_id: u64, event_id: String)
     env.storage().persistent().set(&page_key, &page);
 
     // Update metadata
-    metadata.total_events += 1;
+    metadata.total_events = metadata.total_events.saturating_add(1);
     if page.len() == 1 {
         // New page was created
-        metadata.total_pages += 1;
+        metadata.total_pages = metadata.total_pages.saturating_add(1);
     }
 
     env.storage().persistent().set(&meta_key, &metadata);
