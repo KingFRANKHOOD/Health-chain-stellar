@@ -11,8 +11,9 @@ use crate::{
 };
 
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    vec, Address, Bytes, Env, Map, String, Symbol,
+    symbol_short,
+    testutils::{Address as _, Events, Ledger},
+    vec, Address, Bytes, Env, IntoVal, Map, String, Symbol, TryFromVal,
 };
 
 fn default_fee_structure(env: &Env) -> FeeStructure {
@@ -518,6 +519,24 @@ fn auto_refund_after_timeout() {
     });
 
     assert_eq!(client.process_expired_disputes(), 1);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    assert_eq!(last_event.0, contract_id);
+    assert_eq!(
+        last_event.1,
+        (
+            symbol_short!("dispute"),
+            symbol_short!("refunded"),
+            symbol_short!("v1")
+        )
+            .into_val(&env)
+    );
+    let event = crate::DisputeAutoRefundedEvent::try_from_val(&env, &last_event.2).unwrap();
+    assert_eq!(event.case_id, dispute_id);
+    assert_eq!(event.payment_id, payment_id);
+    assert_eq!(event.refunded_to, payer);
+    assert_eq!(event.amount, 5_000);
 
     env.as_contract(&contract_id, || {
         let payments: Map<u64, Payment> = env.storage().persistent().get(&PAYMENTS).unwrap();

@@ -3073,7 +3073,11 @@ impl HealthChainContract {
             processed += 1;
 
             env.events().publish(
-                (symbol_short!("dispute"), symbol_short!("auto_ref")),
+                (
+                    symbol_short!("dispute"),
+                    symbol_short!("refunded"),
+                    symbol_short!("v1"),
+                ),
                 DisputeAutoRefundedEvent {
                     case_id: dispute_id,
                     payment_id: payment.id,
