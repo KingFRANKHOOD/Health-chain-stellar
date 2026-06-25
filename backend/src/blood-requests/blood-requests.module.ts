@@ -20,7 +20,7 @@ import { BloodRequestItemEntity } from './entities/blood-request-item.entity';
 import { BloodRequestReservationEntity } from './entities/blood-request-reservation.entity';
 import { BloodRequestSagaEntity } from './entities/blood-request-saga.entity';
 import { BloodRequestEntity } from './entities/blood-request.entity';
-import { FulfillmentLegEntity } from './entities/fulfillment-leg.entity';
+import { RequestStatusHistoryEntity } from './entities/request-status-history.entity';
 import { BLOOD_REQUEST_QUEUE } from './enums/request-urgency.enum';
 import { SlaBreachListener } from './listeners/sla-breach.listener';
 import { BloodRequestProcessor } from './processors/blood-request.processor';
@@ -28,7 +28,6 @@ import { BloodBankAvailabilityService } from './services/blood-bank-availability
 import { BloodRequestChainService } from './services/blood-request-chain.service';
 import { BloodRequestEmailService } from './services/blood-request-email.service';
 import { BloodRequestReservationService } from './services/blood-request-reservation.service';
-import { OrderSplittingService } from './services/order-splitting.service';
 import { RequestQueryService } from './services/request-query.service';
 import { SagaCoordinatorService } from './services/saga-coordinator.service';
 import { TriageScoringService } from './services/triage-scoring.service';
@@ -40,7 +39,7 @@ import { TriageScoringService } from './services/triage-scoring.service';
       BloodRequestItemEntity,
       BloodRequestReservationEntity,
       BloodRequestSagaEntity,
-      FulfillmentLegEntity,
+      RequestStatusHistoryEntity,
       InventoryStockEntity,
       OrganizationEntity,
     ]),
