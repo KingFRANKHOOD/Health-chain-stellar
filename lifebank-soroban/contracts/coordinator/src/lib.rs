@@ -232,8 +232,11 @@ pub struct CoordTemperatureBreach {
 
 // ── Storage helpers ────────────────────────────────────────────────────────────
 
-fn get_admin(env: &Env) -> Address {
-    env.storage().instance().get(&DataKey::Admin).unwrap()
+fn get_admin(env: &Env) -> Result<Address, CoordinatorError> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(CoordinatorError::NotInitialized)
 }
 
 fn load_workflow(env: &Env, request_id: u64) -> Option<WorkflowRecord> {
@@ -594,7 +597,8 @@ impl CoordinatorContract {
 
     /// Rollback – admin only. Releases units and refunds payment.
     pub fn rollback(env: Env, request_id: u64) -> Result<(), CoordinatorError> {
-        get_admin(&env).require_auth();
+        let admin = get_admin(&env)?;
+        admin.require_auth();
         Self::require_initialized(&env)?;
         Self::require_not_paused(&env)?;
 

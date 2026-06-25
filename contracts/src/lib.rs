@@ -1264,6 +1264,11 @@ impl HealthChainContract {
 
         let mut unit = units.get(unit_id).ok_or(Error::UnitNotFound)?;
 
+        // Verify caller is the current custodian of this specific unit
+        if unit.bank_id != bank_id {
+            return Err(Error::NotCurrentCustodian);
+        }
+
         // Check status - can only cancel if Reserved
         if unit.status != BloodStatus::Reserved {
             return Err(Error::InvalidStatus);
@@ -1463,6 +1468,11 @@ impl HealthChainContract {
         let mut custody_event = custody_events
             .get(event_id.clone())
             .ok_or(Error::UnitNotFound)?;
+
+        // Verify the event's designated recipient is a registered hospital
+        if !Self::is_hospital(env.clone(), custody_event.to_custodian.clone()) {
+            return Err(Error::UnauthorizedHospital);
+        }
 
         // INVARIANT: Only the designated recipient (to_custodian) can confirm the transfer
         // This ensures units can only be received by the intended hospital
@@ -2230,10 +2240,10 @@ pub(crate) fn append_to_custody_trail(env: &Env, unit_id: u64, event_id: String)
     env.storage().persistent().set(&page_key, &page);
 
     // Update metadata
-    metadata.total_events += 1;
+    metadata.total_events = metadata.total_events.saturating_add(1);
     if page.len() == 1 {
         // New page was created
-        metadata.total_pages += 1;
+        metadata.total_pages = metadata.total_pages.saturating_add(1);
     }
 
     env.storage().persistent().set(&meta_key, &metadata);
@@ -2835,6 +2845,12 @@ impl HealthChainContract {
     ) -> Result<u64, Error> {
         raised_by.require_auth();
 
+        // evidence_ref_chunks reconstruction against evidence_digest is off-chain only;
+        // enforce a valid SHA-256 digest size to reject trivially invalid submissions.
+        if evidence_digest.len() != 32 {
+            return Err(Error::InvalidFeePayload);
+        }
+
         let mut payments: Map<u64, Payment> = env
             .storage()
             .persistent()
@@ -3073,7 +3089,11 @@ impl HealthChainContract {
             processed += 1;
 
             env.events().publish(
-                (symbol_short!("dispute"), symbol_short!("auto_ref")),
+                (
+                    symbol_short!("dispute"),
+                    symbol_short!("refunded"),
+                    symbol_short!("v1"),
+                ),
                 DisputeAutoRefundedEvent {
                     case_id: dispute_id,
                     payment_id: payment.id,
