@@ -75,6 +75,8 @@ pub enum Error {
     InvalidFeePayload = 33,
     /// delivery_address string exceeds MAX_DELIVERY_ADDRESS_LENGTH.
     DeliveryAddressTooLong = 34,
+    /// Requested page number exceeds the total number of available pages.
+    PageNotFound = 35,
 }
 
 // Alias for issue/docs terminology.
@@ -2401,6 +2403,20 @@ impl HealthChainContract {
         unit_id: u64,
         page_number: u32,
     ) -> Result<Vec<String>, Error> {
+        let meta_key = DataKey::UnitTrailMeta(unit_id);
+        let metadata: TrailMetadata = env
+            .storage()
+            .persistent()
+            .get(&meta_key)
+            .unwrap_or(TrailMetadata {
+                total_events: 0,
+                total_pages: 0,
+            });
+
+        if metadata.total_pages > 0 && page_number >= metadata.total_pages {
+            return Err(Error::PageNotFound);
+        }
+
         let page_key = DataKey::UnitTrailPage(unit_id, page_number);
 
         let page: Vec<String> = env
@@ -7149,8 +7165,8 @@ mod test {
             assert_eq!(page.len(), 20);
         }
 
-        let page_5 = client.get_custody_trail(&unit_id, &5);
-        assert_eq!(page_5.len(), 0);
+        let result = client.try_get_custody_trail(&unit_id, &5);
+        assert_eq!(result, Err(Error::PageNotFound));
     }
 
     #[test]
@@ -7219,8 +7235,8 @@ mod test {
         client.confirm_transfer(&hospital, &event_id);
 
         // Query for page 10 (doesn't exist)
-        let trail = client.get_custody_trail(&unit_id, &10);
-        assert_eq!(trail.len(), 0);
+        let result = client.try_get_custody_trail(&unit_id, &10);
+        assert_eq!(result, Err(Error::PageNotFound));
     }
 
     #[test]
