@@ -135,6 +135,8 @@ pub enum Error {
     PaymentNotLocked = 515,
     /// Dispute timeout has not yet elapsed.
     DisputeNotExpired = 516,
+    /// Vesting end timestamp must be strictly greater than cliff timestamp.
+    InvalidVestingSchedule = 518,
     /// Arithmetic overflow detected in running totals.
     Overflow = 518,
 }
@@ -1185,6 +1187,9 @@ impl PaymentContract {
         }
         if duration_secs == 0 {
             return Err(Error::InvalidAmount);
+        }
+        if duration_secs <= cliff_secs {
+            return Err(Error::InvalidVestingSchedule);
         }
 
         // Reject if donor already has an active (uncompleted) vesting schedule.
