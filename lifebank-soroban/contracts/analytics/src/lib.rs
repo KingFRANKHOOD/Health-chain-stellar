@@ -20,7 +20,10 @@ pub struct AnalyticsInitialized {
 
 const DAILY_SECS: u64 = 86_400;
 const WEEKLY_SECS: u64 = 604_800;
-const MONTHLY_SECS: u64 = 2_592_000; // 30 days
+// Calendar months are 28-31 days, so this is a fixed 30-day rolling window,
+// not a calendar month. It does not align with month boundaries and drifts
+// by up to ~5 days per year. See PeriodType::Monthly.
+const THIRTY_DAY_WINDOW_SECS: u64 = 2_592_000; // 30 days
 
 // TTL bounds for snapshot persistent entries (~17 days min, ~365 days max in ledgers at ~5s/ledger)
 const SNAPSHOT_TTL_MIN: u32 = 290_000;
@@ -161,7 +164,7 @@ impl AnalyticsContract {
         let duration_secs = match period_type {
             PeriodType::Daily => DAILY_SECS,
             PeriodType::Weekly => WEEKLY_SECS,
-            PeriodType::Monthly => MONTHLY_SECS,
+            PeriodType::Monthly => THIRTY_DAY_WINDOW_SECS,
         };
 
         cfg.reporting_period = ReportingPeriod {

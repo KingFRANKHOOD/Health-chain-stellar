@@ -6,6 +6,9 @@ use soroban_sdk::{contracttype, Address};
 pub enum PeriodType {
     Daily,
     Weekly,
+    /// A fixed 30-day rolling window, NOT a calendar month. Calendar months
+    /// are 28-31 days, so periods will not align with month boundaries and
+    /// will drift by up to ~5 days per year.
     Monthly,
 }
 
