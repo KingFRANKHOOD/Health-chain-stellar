@@ -50,7 +50,7 @@ export class PolicyVersionEntity {
   @Column({ name: 'activated_at', type: 'timestamptz', nullable: true })
   activatedAt: Date | null;
 
-  @Column({ name: 'rollback_from_version_id', type: 'varchar', nullable: true })
+  @Column({ name: 'rollback_from_version_id', type: 'uuid', nullable: true })
   rollbackFromVersionId: string | null;
 
   /**
