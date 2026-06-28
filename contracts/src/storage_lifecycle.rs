@@ -72,8 +72,6 @@
 //! 4. Use `get_archived_history_summary` to obtain the first/last timestamps
 //!    and total count for display without loading the full history.
 
-#![allow(dead_code)]
-
 use soroban_sdk::{contracttype, symbol_short, Env, Vec};
 
 use crate::{
