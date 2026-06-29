@@ -4,7 +4,7 @@ set -e
 
 # Configuration
 NETWORK="testnet"
-IDENTITY="default"  # Your Stellar CLI identity
+IDENTITY=${STELLAR_IDENTITY:-default}  # Override via STELLAR_IDENTITY env var; falls back to "default" for local dev
 
 echo "🚀 Deploying Lifebank contracts to ${NETWORK}..."
 echo ""
